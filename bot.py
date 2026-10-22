@@ -87,6 +87,7 @@ class Track:
     thumbnail: Optional[str]
     requested_by: str
     stream_url: Optional[str] = None
+    preload_task: Optional[asyncio.Task] = None
 
     @property
     def duration_str(self) -> str:
@@ -406,6 +407,35 @@ class MusicBot(commands.Bot):
 bot = MusicBot()
 
 
+def trigger_preload(guild: discord.Guild) -> None:
+    """Si hay una siguiente canción en la cola pendiente de stream_url, inicia la precarga en background."""
+    state = bot.get_state(guild.id)
+    if not state.queue:
+        return
+    next_track = state.queue[0]
+    if next_track.stream_url or (next_track.preload_task and not next_track.preload_task.done()):
+        return
+
+    async def _do_preload() -> None:
+        try:
+            fresh = await asyncio.to_thread(
+                extract_track,
+                next_track.webpage_url,
+                next_track.requested_by,
+                next_track.title,
+            )
+            if fresh and fresh.stream_url:
+                next_track.stream_url = fresh.stream_url
+                next_track.title = fresh.title or next_track.title
+                next_track.duration = fresh.duration or next_track.duration
+                next_track.thumbnail = fresh.thumbnail or next_track.thumbnail
+                print(f"⚡ Pista precargada con éxito en background: {next_track.title}")
+        except Exception as exc:
+            print(f"Error precargando ({next_track.title}): {exc}")
+
+    next_track.preload_task = bot.loop.create_task(_do_preload())
+
+
 async def play_next_async(guild: discord.Guild) -> None:
     """Reproduce la siguiente canción de la cola resolviendo el stream si viene de una playlist."""
     state = bot.get_state(guild.id)
@@ -421,7 +451,14 @@ async def play_next_async(guild: discord.Guild) -> None:
 
     next_track = state.queue.popleft()
 
-    # Si la canción viene de una playlist guardada, extraemos la URL de stream fresca al momento
+    # Si se estaba precargando en segundo plano, esperamos a que termine
+    if next_track.preload_task and not next_track.preload_task.done():
+        try:
+            await asyncio.wait_for(next_track.preload_task, timeout=25.0)
+        except Exception:
+            pass
+
+    # Si aún no tiene stream_url (no dio tiempo o no se precargó), lo resolvemos ahora
     if not next_track.stream_url:
         try:
             fresh = await asyncio.to_thread(
@@ -453,6 +490,9 @@ async def play_next_async(guild: discord.Guild) -> None:
         asyncio.run_coroutine_threadsafe(play_next_async(guild), bot.loop)
 
     voice_client.play(source, after=after_playing)
+
+    # Inmediatamente disparamos la precarga de la siguiente canción que queda en la cola
+    trigger_preload(guild)
 
     if state.text_channel:
         embed = discord.Embed(
@@ -568,6 +608,8 @@ async def execute_remote_command(cmd: dict) -> None:
             )
         if not voice_client.is_playing() and not voice_client.is_paused():
             await play_next_async(guild)
+        else:
+            trigger_preload(guild)
 
     elif ctype == "play_single":
         query = cmd.get("query")
@@ -582,6 +624,8 @@ async def execute_remote_command(cmd: dict) -> None:
             state.queue.append(track)
             if not voice_client.is_playing() and not voice_client.is_paused():
                 await play_next_async(guild)
+            else:
+                trigger_preload(guild)
         except Exception:
             pass
 
@@ -669,10 +713,12 @@ async def execute_remote_command(cmd: dict) -> None:
                 state.queue.append(track)
                 if not voice_client.is_playing() and not voice_client.is_paused():
                     await play_next_async(guild)
-                elif text_ch:
-                    await text_ch.send(
-                        f"➕ Añadida a la cola: **{track.title}** (`{track.duration_str}`)"
-                    )
+                else:
+                    trigger_preload(guild)
+                    if text_ch:
+                        await text_ch.send(
+                            f"➕ Añadida a la cola: **{track.title}** (`{track.duration_str}`)"
+                        )
             except Exception as exc:
                 if text_ch:
                     await text_ch.send(f"⚠️ Error al cargar: `{exc}`")
@@ -702,6 +748,8 @@ async def execute_remote_command(cmd: dict) -> None:
                 )
             if not voice_client.is_playing() and not voice_client.is_paused():
                 await play_next_async(guild)
+            else:
+                trigger_preload(guild)
 
         elif slash_cmd == "ytplaylist":
             url_pl = opts.get("url")
@@ -729,6 +777,8 @@ async def execute_remote_command(cmd: dict) -> None:
                     state.queue.append(t)
                 if not voice_client.is_playing() and not voice_client.is_paused():
                     await play_next_async(guild)
+                else:
+                    trigger_preload(guild)
             except Exception as exc:
                 if text_ch:
                     await text_ch.send(
@@ -814,7 +864,7 @@ async def cloud_sync_loop() -> None:
             except Exception as exc:
                 LAST_SYNC_STATUS["status"] = "error"
                 LAST_SYNC_STATUS["error"] = str(exc)
-            await asyncio.sleep(3)
+            await asyncio.sleep(2)
 
 
 # ==================== ENDPOINTS WEB API ====================
@@ -985,6 +1035,8 @@ async def handle_play_playlist_from_web(request: web.Request) -> web.Response:
 
     if not voice_client.is_playing() and not voice_client.is_paused():
         await play_next_async(guild)
+    else:
+        trigger_preload(guild)
 
     mode = "en modo aleatorio" if shuffle else "en orden"
     return web.json_response(
@@ -1018,10 +1070,11 @@ async def handle_play_single_from_web(request: web.Request) -> web.Response:
         return web.json_response(
             {"ok": True, "message": f"Reproduciendo: {track.title}"}
         )
-
-    return web.json_response(
-        {"ok": True, "message": f"Añadida a la cola: {track.title}"}
-    )
+    else:
+        trigger_preload(guild)
+        return web.json_response(
+            {"ok": True, "message": f"Añadida a la cola: {track.title}"}
+        )
 
 
 async def handle_player_action(request: web.Request) -> web.Response:
@@ -1106,6 +1159,7 @@ async def play(ctx: commands.Context, *, busqueda: str) -> None:
         await ctx.send(f"▶️ Cargada: **{track.title}**")
         await play_next_async(ctx.guild)
     else:
+        trigger_preload(ctx.guild)
         embed = discord.Embed(
             title="➕ Añadida a la cola",
             description=f"[{track.title}]({track.webpage_url})",
@@ -1203,6 +1257,8 @@ async def playlist_cmd(
 
     if not voice_client.is_playing() and not voice_client.is_paused():
         await play_next_async(ctx.guild)
+    else:
+        trigger_preload(ctx.guild)
 
 
 @bot.hybrid_command(
@@ -1288,6 +1344,8 @@ async def ytplaylist_cmd(
 
     if not voice_client.is_playing() and not voice_client.is_paused():
         await play_next_async(ctx.guild)
+    else:
+        trigger_preload(ctx.guild)
 
 
 @bot.hybrid_command(
