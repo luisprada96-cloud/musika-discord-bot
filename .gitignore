@@ -16,4 +16,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 cloudflared.exe
+.wrangler/
+playlists.json
 

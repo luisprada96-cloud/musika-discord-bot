@@ -475,29 +475,67 @@ async def play_next_async(guild: discord.Guild) -> None:
 
 async def find_or_connect_voice(
     preferred_guild: Optional[discord.Guild] = None,
+    user_id: Optional[int] = None,
 ) -> tuple[Optional[discord.Guild], Optional[discord.VoiceClient], Optional[str]]:
-    """Busca el canal de voz activo del bot o se une al canal donde haya usuarios."""
+    """Busca el canal de voz activo del bot o se une al canal del usuario o donde haya miembros."""
     guilds = [preferred_guild] if preferred_guild else list(bot.guilds)
+
+    # 1. Si ya estamos conectados en este servidor y el cliente sigue activo, usarlo
     for guild in guilds:
         if not guild:
             continue
         if guild.voice_client and guild.voice_client.is_connected():
             return guild, guild.voice_client, None
 
-    # Si no está conectado, buscar el primer canal de voz con algún usuario humano conectado
+    # 2. Si sabemos qué usuario ejecutó la orden, buscar en qué canal de voz está
+    if user_id:
+        for guild in guilds:
+            if not guild:
+                continue
+            vs = guild.voice_states.get(user_id)
+            if vs and vs.channel:
+                try:
+                    vc = await vs.channel.connect()
+                    return guild, vc, None
+                except discord.ClientException:
+                    if guild.voice_client:
+                        return guild, guild.voice_client, None
+                except Exception as exc:
+                    print(f"Error conectando al canal del usuario ({user_id}): {exc}")
+
+    # 3. Fallback: buscar mediante guild.voice_states si hay algún humano en canales de voz
+    for guild in guilds:
+        if not guild:
+            continue
+        for uid, vs in guild.voice_states.items():
+            if vs.channel and (not bot.user or uid != bot.user.id):
+                try:
+                    vc = await vs.channel.connect()
+                    return guild, vc, None
+                except discord.ClientException:
+                    if guild.voice_client:
+                        return guild, guild.voice_client, None
+                except Exception:
+                    pass
+
+    # 4. Fallback clásico por vc.members
     for guild in guilds:
         if not guild:
             continue
         for vc in guild.voice_channels:
             humans = [m for m in vc.members if not m.bot]
             if humans:
-                voice_client = await vc.connect()
-                return guild, voice_client, None
+                try:
+                    voice_client = await vc.connect()
+                    return guild, voice_client, None
+                except discord.ClientException:
+                    if guild.voice_client:
+                        return guild, guild.voice_client, None
 
     return (
         None,
         None,
-        "Entra primero a un canal de voz en Discord para que el bot sepa dónde unirse.",
+        "Debes estar dentro de un canal de voz en Discord para que el bot pueda unirse.",
     )
 
 
@@ -571,6 +609,7 @@ async def execute_remote_command(cmd: dict) -> None:
         guild_id = int(cmd["guild_id"]) if cmd.get("guild_id") else None
         channel_id = int(cmd["channel_id"]) if cmd.get("channel_id") else None
         user_name = cmd.get("user_name") or "Discord"
+        user_id = int(cmd["user_id"]) if cmd.get("user_id") else None
 
         pref_guild = bot.get_guild(guild_id) if guild_id else None
         text_ch = (
@@ -598,8 +637,15 @@ async def execute_remote_command(cmd: dict) -> None:
                     await vc.disconnect()
             return
 
-        guild, voice_client, err = await find_or_connect_voice(pref_guild)
+        guild, voice_client, err = await find_or_connect_voice(
+            pref_guild, user_id=user_id
+        )
         if err or not guild or not voice_client:
+            if not text_ch and channel_id:
+                try:
+                    text_ch = await bot.fetch_channel(channel_id)
+                except Exception:
+                    pass
             if text_ch:
                 try:
                     await text_ch.send(f"❌ {err}")

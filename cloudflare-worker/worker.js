@@ -565,9 +565,37 @@ const HTML_PAGE = `<!DOCTYPE html>
       }
     }
 
+    let isWaking = false;
     async function wakeBot() {
-      showToast('⚡ Despertando al bot en Render (tarda ~25s)...');
-      await fetch('/api/bot/wake', { method: 'POST' });
+      if (isWaking) return;
+      isWaking = true;
+      const wakeBtn = document.getElementById('wakeBtn');
+      if (wakeBtn) {
+        wakeBtn.disabled = true;
+        wakeBtn.textContent = '⏳ Despertando (~40s)...';
+      }
+      showToast('⚡ Enviando señal de arranque a Render...');
+      try {
+        await fetch('/api/bot/wake', { method: 'POST' });
+        for (let i = 0; i < 20; i++) {
+          await new Promise(r => setTimeout(r, 3000));
+          const res = await fetch('/api/state');
+          const data = await res.json();
+          if (data.bot_awake) {
+            showToast('✅ ¡El bot ha despertado y está listo en Discord!');
+            fetchState();
+            break;
+          }
+        }
+      } catch (e) {
+        showToast('⚠️ Error al contactar con Render');
+      } finally {
+        isWaking = false;
+        if (wakeBtn) {
+          wakeBtn.disabled = false;
+          wakeBtn.textContent = '⚡ Despertar Bot';
+        }
+      }
     }
 
     function escapeHtml(str) {
@@ -703,9 +731,30 @@ async function verifyDiscordRequest(request, rawBody) {
   }
 }
 
+let memoryBotState = { now_playing: null, queue_length: 0, updated_at: 0 };
+
+async function getBotState(env) {
+  try {
+    const raw = await env.PLAYLISTS_KV.get("bot_state");
+    if (raw) return JSON.parse(raw);
+  } catch (_) {}
+  return memoryBotState;
+}
+
+async function saveBotState(env, state) {
+  memoryBotState = state;
+  try {
+    await env.PLAYLISTS_KV.put("bot_state", JSON.stringify(state));
+  } catch (_) {}
+}
+
 function wakeRenderIfConfigured(env, ctx) {
   if (env.BOT_PING_URL) {
-    ctx.waitUntil(fetch(env.BOT_PING_URL).catch(() => {}));
+    ctx.waitUntil(
+      fetch(env.BOT_PING_URL, {
+        headers: { "User-Agent": "MusiKa-Wakeup-Ping/1.0" },
+      }).catch(() => {})
+    );
   }
 }
 
@@ -771,9 +820,8 @@ export default {
         // Despertar inmediatamente a Render
         wakeRenderIfConfigured(env, ctx);
 
-        const botStateRaw = await env.PLAYLISTS_KV.get("bot_state");
-        const botState = botStateRaw ? JSON.parse(botStateRaw) : {};
-        const botAwake = Boolean(botState.updated_at && Date.now() - botState.updated_at < 15000);
+        const botState = await getBotState(env);
+        const botAwake = Boolean(botState.updated_at && Date.now() - botState.updated_at < 35000);
 
         const userName =
           interaction.member?.nick ||
@@ -838,12 +886,9 @@ export default {
     }
 
     if (request.method === "GET" && (path === "/api/state" || path === "/api/playlists")) {
-      const [playlists, botStateRaw] = await Promise.all([
-        getPlaylists(env),
-        env.PLAYLISTS_KV.get("bot_state"),
-      ]);
-      const botState = botStateRaw ? JSON.parse(botStateRaw) : {};
-      const botAwake = Boolean(botState.updated_at && Date.now() - botState.updated_at < 15000);
+      const playlists = await getPlaylists(env);
+      const botState = await getBotState(env);
+      const botAwake = Boolean(botState.updated_at && Date.now() - botState.updated_at < 35000);
       return Response.json({
         bot_name: "MusiKa",
         bot_awake: botAwake,
@@ -856,14 +901,12 @@ export default {
     // Endpoint para sincronización bidireccional del Bot de Discord con Cloudflare KV
     if (request.method === "POST" && path === "/api/bot/sync") {
       const body = await request.json();
-      await env.PLAYLISTS_KV.put(
-        "bot_state",
-        JSON.stringify({
-          now_playing: body.now_playing || null,
-          queue_length: body.queue_length || 0,
-          updated_at: Date.now(),
-        })
-      );
+      const newState = {
+        now_playing: body.now_playing || null,
+        queue_length: body.queue_length || 0,
+        updated_at: Date.now(),
+      };
+      await saveBotState(env, newState);
       const cmdsRaw = await env.PLAYLISTS_KV.get("bot_commands");
       const commands = cmdsRaw ? JSON.parse(cmdsRaw) : [];
       if (commands.length > 0) {
