@@ -39,6 +39,8 @@ FFMPEG_OPTIONS = {
     "options": "-vn",
 }
 
+import re
+import urllib.request
 from urllib.parse import parse_qs, urlparse
 
 YTDL_OPTIONS = {
@@ -48,6 +50,11 @@ YTDL_OPTIONS = {
     "no_warnings": True,
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["tv_embedded", "ios", "mweb", "android_vr"]
+        }
+    },
 }
 
 YTDL_PLAYLIST_OPTIONS = {
@@ -129,35 +136,145 @@ class GuildMusicState:
         self.text_channel: Optional[discord.abc.Messageable] = None
 
 
+def clean_song_title(raw_title: str) -> str:
+    """Limpia etiquetas de vídeo como (Official Video), [4K], (Lyrics), etc. para búsquedas precisas."""
+    cleaned = re.sub(
+        r"[\(\[].*?(official|oficial|video|vídeo|audio|remaster|4k|hd|lyric|letra|visualizer|live|clip).*?[\)\]]",
+        "",
+        raw_title,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", cleaned).strip(" -|") or raw_title
+
+
+def fetch_youtube_metadata(query: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Obtiene (title, webpage_url, thumbnail) de YouTube sin bloqueo de IP usando noembed o youtubei/v1/search."""
+    if query.startswith(("http://", "https://")):
+        try:
+            req = urllib.request.Request(
+                f"https://noembed.com/embed?url={quote(query, safe='')}",
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data.get("title"):
+                    author = data.get("author_name") or ""
+                    title = data["title"]
+                    if (
+                        author
+                        and author.lower() not in title.lower()
+                        and " - " not in title
+                    ):
+                        title = f"{author} - {title}"
+                    return title, query, data.get("thumbnail_url")
+        except Exception:
+            pass
+        return None, query, None
+
+    try:
+        payload = json.dumps(
+            {
+                "context": {
+                    "client": {
+                        "clientName": "WEB",
+                        "clientVersion": "2.20241010.01.00",
+                        "hl": "es",
+                        "gl": "ES",
+                    }
+                },
+                "query": query,
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            "https://www.youtube.com/youtubei/v1/search?prettyPrint=false",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        contents = (
+            data.get("contents", {})
+            .get("twoColumnSearchResultsRenderer", {})
+            .get("primaryContents", {})
+            .get("sectionListRenderer", {})
+            .get("contents", [])
+        )
+        for section in contents:
+            for item in section.get("itemSectionRenderer", {}).get(
+                "contents", []
+            ):
+                v = item.get("videoRenderer")
+                if v and v.get("videoId"):
+                    vid = v["videoId"]
+                    runs = v.get("title", {}).get("runs", [])
+                    title = "".join(r.get("text", "") for r in runs) or query
+                    return (
+                        title,
+                        f"https://www.youtube.com/watch?v={vid}",
+                        f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+                    )
+    except Exception:
+        pass
+    return None, None, None
+
+
 def extract_track(
     query: str, requested_by: str, fallback_title: Optional[str] = None
 ) -> Track:
-    """Extrae la URL de audio directo y metadatos usando yt-dlp (con fallback a SoundCloud en la nube)."""
+    """Extrae el audio priorizando YouTube y evitando previews de 30s si la IP cloud está limitada."""
+    yt_title, yt_url, yt_thumb = fetch_youtube_metadata(query)
+    effective_title = fallback_title or yt_title or query
     search_query = (
-        query
-        if query.startswith(("http://", "https://"))
-        else f"ytsearch1:{query}"
+        yt_url
+        if yt_url and yt_url.startswith(("http://", "https://"))
+        else (
+            query
+            if query.startswith(("http://", "https://"))
+            else f"ytsearch1:{query}"
+        )
     )
-    try:
-        info = ytdl.extract_info(search_query, download=False)
-    except Exception:
-        # Fallback automático a SoundCloud si la IP de centro de datos en la nube es bloqueada por YouTube
-        sc_term = fallback_title or query
-        info = ytdl.extract_info(f"scsearch1:{sc_term}", download=False)
 
-    if "entries" in info:
-        entries = [e for e in info["entries"] if e]
-        if not entries:
+    info = None
+    try:
+        res = ytdl.extract_info(search_query, download=False)
+        if "entries" in res:
+            entries = [e for e in res["entries"] if e]
+            if entries:
+                info = entries[0]
+        else:
+            info = res
+    except Exception:
+        info = None
+
+    # Si YouTube bloquea la IP de Render o devuelve un preview corto, buscamos el audio completo (>45s)
+    if not info or not info.get("url"):
+        sc_term = clean_song_title(effective_title)
+        res = ytdl.extract_info(f"scsearch8:{sc_term}", download=False)
+        entries = [e for e in (res.get("entries") or []) if e and e.get("url")]
+        # Filtrar previews de 30 segundos de SoundCloud Go+ (elegir pista completa > 45s)
+        full_entries = [
+            e for e in entries if (e.get("duration") or 0) > 45
+        ]
+        chosen = (
+            full_entries[0]
+            if full_entries
+            else (entries[0] if entries else None)
+        )
+        if not chosen:
             raise ValueError(
-                f"No se encontraron resultados para: {query}"
+                f"No se encontraron resultados reproducibles para: {effective_title}"
             )
-        info = entries[0]
+        info = chosen
 
     return Track(
-        title=info.get("title", "Canción sin título"),
-        webpage_url=info.get("webpage_url") or info.get("original_url") or query,
+        title=yt_title or fallback_title or info.get("title", "Canción"),
+        webpage_url=yt_url
+        or info.get("webpage_url")
+        or info.get("original_url")
+        or query,
         duration=info.get("duration"),
-        thumbnail=info.get("thumbnail"),
+        thumbnail=yt_thumb or info.get("thumbnail"),
         requested_by=requested_by,
         stream_url=info.get("url"),
     )
@@ -307,7 +424,10 @@ async def play_next_async(guild: discord.Guild) -> None:
     if not next_track.stream_url:
         try:
             fresh = await asyncio.to_thread(
-                extract_track, next_track.webpage_url, next_track.requested_by
+                extract_track,
+                next_track.webpage_url,
+                next_track.requested_by,
+                next_track.title,
             )
             next_track.stream_url = fresh.stream_url
             next_track.title = fresh.title or next_track.title
