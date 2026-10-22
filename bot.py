@@ -23,7 +23,7 @@ load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
-PUBLIC_WEB_URL = os.getenv("PUBLIC_WEB_URL", f"http://localhost:{WEB_PORT}")
+PUBLIC_WEB_URL = os.getenv("PUBLIC_WEB_URL", "https://musika.luisjourney.xyz")
 
 BASE_DIR = Path(__file__).parent
 PLAYLISTS_FILE = BASE_DIR / "playlists.json"
