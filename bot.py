@@ -736,6 +736,8 @@ async def execute_remote_command(cmd: dict) -> None:
                     )
 
 
+RECENT_COMMANDS: list[dict] = []
+
 LAST_SYNC_STATUS = {
     "status": "iniciando",
     "last_sync": None,
@@ -795,7 +797,14 @@ async def cloud_sync_loop() -> None:
                             playlist_store.playlists = data["playlists"]
                             playlist_store.save()
                         for cmd in data.get("commands") or []:
-                            await execute_remote_command(cmd)
+                            entry = {"cmd": cmd, "at": time.time(), "result": "ok"}
+                            try:
+                                await execute_remote_command(cmd)
+                            except Exception as exc:
+                                entry["result"] = f"error: {exc!r}"
+                                print(f"Error ejecutando comando remoto {cmd}: {exc!r}")
+                            RECENT_COMMANDS.append(entry)
+                            del RECENT_COMMANDS[:-10]
                     else:
                         LAST_SYNC_STATUS["status"] = f"http_{resp.status}"
                         LAST_SYNC_STATUS["error"] = await resp.text()
@@ -828,6 +837,23 @@ async def handle_api_state(request: web.Request) -> web.Response:
             "version": "v1.2-voice-states",
             "sync_status": LAST_SYNC_STATUS,
             "public_web_url": PUBLIC_WEB_URL,
+            "recent_commands": RECENT_COMMANDS,
+            "guilds": [
+                {
+                    "id": str(g.id),
+                    "name": g.name,
+                    "bot_voice": (
+                        g.voice_client.channel.name
+                        if g.voice_client and g.voice_client.channel
+                        else None
+                    ),
+                    "voice_states": {
+                        str(uid): (vs.channel.name if vs.channel else None)
+                        for uid, vs in g.voice_states.items()
+                    },
+                }
+                for g in bot.guilds
+            ],
             "playlists": playlist_store.playlists,
             "now_playing": now_playing,
             "queue_length": queue_len,
