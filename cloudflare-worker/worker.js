@@ -673,6 +673,36 @@ async function pushCommand(env, cmd) {
   await env.PLAYLISTS_KV.put("bot_commands", JSON.stringify(list.slice(-20)));
 }
 
+const DISCORD_PUBLIC_KEY = "5d9712c00d7613e94b42461e2753d368bcac18bf7f27e0c132bf42761f3fa4f1";
+
+function hexToUint8Array(hex) {
+  if (!hex || hex.length % 2 !== 0) return new Uint8Array(0);
+  const arr = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    arr[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+  }
+  return arr;
+}
+
+async function verifyDiscordRequest(request, rawBody) {
+  const signature = request.headers.get("X-Signature-Ed25519");
+  const timestamp = request.headers.get("X-Signature-Timestamp");
+  if (!signature || !timestamp) return false;
+  try {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      hexToUint8Array(DISCORD_PUBLIC_KEY),
+      { name: "Ed25519" },
+      false,
+      ["verify"]
+    );
+    const msg = new TextEncoder().encode(timestamp + rawBody);
+    return await crypto.subtle.verify("Ed25519", key, hexToUint8Array(signature), msg);
+  } catch (_) {
+    return false;
+  }
+}
+
 function wakeRenderIfConfigured(env, ctx) {
   if (env.BOT_PING_URL) {
     ctx.waitUntil(fetch(env.BOT_PING_URL).catch(() => {}));
@@ -683,6 +713,118 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
+
+    // Receptor 24/7 de comandos Slash de Discord (/play, /playlist, /ytplaylist, etc.)
+    // Despierta automáticamente el contenedor de Render si estaba dormido
+    if (request.method === "POST" && path === "/api/discord") {
+      const rawBody = await request.text();
+      const isValid = await verifyDiscordRequest(request, rawBody);
+      if (!isValid) {
+        return new Response("Invalid request signature", { status: 401 });
+      }
+      const interaction = JSON.parse(rawBody);
+
+      // 1 = PING de verificación de Discord
+      if (interaction.type === 1) {
+        return Response.json({ type: 1 });
+      }
+
+      // 4 = Autocompletado en vivo de /playlist directamente desde Cloudflare KV
+      if (interaction.type === 4) {
+        const playlists = await getPlaylists(env);
+        const focused = (interaction.data?.options || []).find((o) => o.focused);
+        const current = (focused?.value || "").toLowerCase();
+        const choices = Object.keys(playlists)
+          .filter((name) => name.toLowerCase().includes(current))
+          .slice(0, 25)
+          .map((name) => ({
+            name: `💿 ${name} (${playlists[name].length} canciones)`,
+            value: name,
+          }));
+        return Response.json({ type: 8, data: { choices } });
+      }
+
+      // 2 = Ejecución de comando Slash (/play, /playlist, /ytplaylist, /skip, etc.)
+      if (interaction.type === 2) {
+        const cmdName = interaction.data?.name;
+        const opts = {};
+        for (const opt of interaction.data?.options || []) {
+          opts[opt.name] = opt.value;
+        }
+
+        if (cmdName === "web") {
+          return Response.json({
+            type: 4,
+            data: {
+              embeds: [
+                {
+                  title: "🌐 Panel Web de Playlists — MusiKa",
+                  description:
+                    "Entra aquí para crear listas, añadir o borrar canciones y controlar el bot:\n\n👉 **[https://musika.luisjourney.xyz](https://musika.luisjourney.xyz)**",
+                  color: 0x5865f2,
+                },
+              ],
+            },
+          });
+        }
+
+        // Despertar inmediatamente a Render
+        wakeRenderIfConfigured(env, ctx);
+
+        const botStateRaw = await env.PLAYLISTS_KV.get("bot_state");
+        const botState = botStateRaw ? JSON.parse(botStateRaw) : {};
+        const botAwake = Boolean(botState.updated_at && Date.now() - botState.updated_at < 15000);
+
+        const userName =
+          interaction.member?.nick ||
+          interaction.member?.user?.global_name ||
+          interaction.member?.user?.username ||
+          "Discord";
+        const userId = interaction.member?.user?.id || interaction.user?.id;
+
+        await pushCommand(env, {
+          type: "discord_slash",
+          cmd: cmdName,
+          options: opts,
+          guild_id: interaction.guild_id,
+          channel_id: interaction.channel_id,
+          user_id: userId,
+          user_name: userName,
+        });
+
+        const wakeNotice = botAwake
+          ? ""
+          : "\n⚡ *(El bot estaba en reposo ahorrando horas en Render; tardará ~20s en entrar al canal de voz)*";
+
+        let replyText = `🎶 Comando \`/${cmdName}\` enviado al bot.${wakeNotice}`;
+        if (cmdName === "play") {
+          replyText = `▶️ Buscando y cargando: **${opts.busqueda}**...${wakeNotice}`;
+        } else if (cmdName === "playlist") {
+          replyText = `💿 Cargando playlist **${opts.nombre}**...${wakeNotice}`;
+        } else if (cmdName === "ytplaylist") {
+          replyText = `📺 Cargando playlist de YouTube...${wakeNotice}`;
+        } else if (cmdName === "skip") {
+          replyText = `⏭️ Saltando a la siguiente canción...`;
+        } else if (cmdName === "pause") {
+          replyText = `⏸️ Pausando reproducción...`;
+        } else if (cmdName === "resume") {
+          replyText = `▶️ Reanudando reproducción...`;
+        } else if (cmdName === "stop") {
+          replyText = `⏹️ Deteniendo música y vaciando la cola...`;
+        } else if (cmdName === "queue") {
+          if (botState.now_playing) {
+            replyText = `🔊 **Sonando ahora:** ${botState.now_playing.title} (\`${botState.now_playing.duration_str}\`)\n⏭️ Canciones en espera: **${botState.queue_length || 0}**`;
+          } else {
+            replyText = `📭 No hay nada sonando ahora mismo.`;
+          }
+        }
+
+        return Response.json({
+          type: 4,
+          data: { content: replyText },
+        });
+      }
+    }
 
     if (request.method === "GET" && path === "/") {
       // Al abrir la web, enviamos un toque automático a Render por si estaba dormido
