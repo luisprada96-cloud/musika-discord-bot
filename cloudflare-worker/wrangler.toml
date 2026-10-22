@@ -9,3 +9,7 @@ routes = [
 [[kv_namespaces]]
 binding = "PLAYLISTS_KV"
 id = "d2ae90b10ab94c6dbb9f96e43bdfb25d"
+
+[vars]
+BOT_PING_URL = "https://musika-discord-bot.onrender.com/api/state"
+
