@@ -262,7 +262,10 @@ const HTML_PAGE = `<!DOCTYPE html>
 <body>
   <header>
     <div class="brand">🎵 MusiKa — Panel de Playlists</div>
-    <div id="botStatus" class="status-badge">☁️ Web 24/7 en Cloudflare</div>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <div id="botStatus" class="status-badge">☁️ Conectando...</div>
+      <button id="wakeBtn" class="btn-secondary" style="display:none; padding:6px 12px; font-size:0.82rem;" onclick="wakeBot()">⚡ Despertar Bot</button>
+    </div>
   </header>
 
   <div class="container">
@@ -333,6 +336,18 @@ const HTML_PAGE = `<!DOCTYPE html>
       const res = await fetch('/api/state');
       const data = await res.json();
       playlists = data.playlists || {};
+
+      const badge = document.getElementById('botStatus');
+      const wakeBtn = document.getElementById('wakeBtn');
+      if (data.bot_awake) {
+        badge.textContent = '🟢 Bot Despierto en Discord';
+        badge.style.color = '#4ade80';
+        wakeBtn.style.display = 'none';
+      } else {
+        badge.textContent = '💤 Bot en Reposo (Ahorrando horas)';
+        badge.style.color = '#fbbf24';
+        wakeBtn.style.display = 'inline-flex';
+      }
 
       const npTitle = document.getElementById('npTitle');
       const npSub = document.getElementById('npSub');
@@ -550,6 +565,11 @@ const HTML_PAGE = `<!DOCTYPE html>
       }
     }
 
+    async function wakeBot() {
+      showToast('⚡ Despertando al bot en Render (tarda ~25s)...');
+      await fetch('/api/bot/wake', { method: 'POST' });
+    }
+
     function escapeHtml(str) {
       return String(str || '').replace(/[&<>"']/g, s => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -653,13 +673,26 @@ async function pushCommand(env, cmd) {
   await env.PLAYLISTS_KV.put("bot_commands", JSON.stringify(list.slice(-20)));
 }
 
+function wakeRenderIfConfigured(env, ctx) {
+  if (env.BOT_PING_URL) {
+    ctx.waitUntil(fetch(env.BOT_PING_URL).catch(() => {}));
+  }
+}
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
 
     if (request.method === "GET" && path === "/") {
+      // Al abrir la web, enviamos un toque automático a Render por si estaba dormido
+      wakeRenderIfConfigured(env, ctx);
       return new Response(HTML_PAGE, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+    }
+
+    if (request.method === "POST" && path === "/api/bot/wake") {
+      wakeRenderIfConfigured(env, ctx);
+      return Response.json({ ok: true, message: "Despertando bot..." });
     }
 
     if (request.method === "GET" && (path === "/api/state" || path === "/api/playlists")) {
@@ -668,11 +701,13 @@ export default {
         env.PLAYLISTS_KV.get("bot_state"),
       ]);
       const botState = botStateRaw ? JSON.parse(botStateRaw) : {};
+      const botAwake = Boolean(botState.updated_at && Date.now() - botState.updated_at < 15000);
       return Response.json({
         bot_name: "MusiKa",
+        bot_awake: botAwake,
         playlists,
-        now_playing: botState.now_playing || null,
-        queue_length: botState.queue_length || 0,
+        now_playing: botAwake ? botState.now_playing || null : null,
+        queue_length: botAwake ? botState.queue_length || 0 : 0,
       });
     }
 
@@ -755,12 +790,14 @@ export default {
     if (request.method === "POST" && matchPlayPlaylist) {
       const name = decodeURIComponent(matchPlayPlaylist[1]);
       const body = await request.json();
+      wakeRenderIfConfigured(env, ctx);
       await pushCommand(env, { type: "play_playlist", name, shuffle: !!body.shuffle });
       return Response.json({ ok: true, message: `Orden enviada al bot: reproducir "${name}"` });
     }
 
     if (request.method === "POST" && path === "/api/player/play") {
       const body = await request.json();
+      wakeRenderIfConfigured(env, ctx);
       await pushCommand(env, { type: "play_single", query: body.query });
       return Response.json({ ok: true, message: "Canción enviada a la cola del bot" });
     }
@@ -768,16 +805,11 @@ export default {
     const matchAction = path.match(/^\/api\/player\/([^/]+)$/);
     if (request.method === "POST" && matchAction) {
       const action = matchAction[1];
+      wakeRenderIfConfigured(env, ctx);
       await pushCommand(env, { type: "action", action });
       return Response.json({ ok: true, message: `Acción enviada: ${action}` });
     }
 
     return new Response("Not Found", { status: 404 });
-  },
-
-  async scheduled(event, env, ctx) {
-    if (env.BOT_PING_URL) {
-      ctx.waitUntil(fetch(env.BOT_PING_URL).catch(() => {}));
-    }
   },
 };
