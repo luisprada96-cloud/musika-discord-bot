@@ -1,0 +1,14 @@
+name = "musika"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+routes = [
+  { pattern = "musika.luisjourney.xyz/*", zone_name = "luisjourney.xyz" }
+]
+
+[[kv_namespaces]]
+binding = "PLAYLISTS_KV"
+id = "d2ae90b10ab94c6dbb9f96e43bdfb25d"
+
+[triggers]
+crons = ["*/10 * * * *"]
