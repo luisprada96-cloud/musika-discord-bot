@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: musika-discord-bot
+    runtime: docker
+    plan: free
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: PUBLIC_WEB_URL
+        value: https://musika.luisjourney.xyz
+      - key: WEB_PORT
+        value: 8080
