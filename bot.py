@@ -464,6 +464,17 @@ async def cloud_sync_loop() -> None:
                         queue_len = len(st.queue)
                         break
 
+                # Si está sonando música en Render, mantenemos despierto el contenedor hasta que termine la cola
+                render_url = os.getenv("RENDER_EXTERNAL_URL")
+                if render_url and now_playing is not None:
+                    try:
+                        await session.get(
+                            render_url,
+                            timeout=aiohttp.ClientTimeout(total=4),
+                        )
+                    except Exception:
+                        pass
+
                 async with session.post(
                     sync_url,
                     json={
