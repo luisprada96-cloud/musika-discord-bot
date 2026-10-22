@@ -1,0 +1,19 @@
+# Entorno virtual
+.venv/
+venv/
+env/
+
+# Variables de entorno (¡NUNCA subir el token a GitHub!)
+.env
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Archivos temporales y logs
+*.log
+.DS_Store
+Thumbs.db
+cloudflared.exe
+
