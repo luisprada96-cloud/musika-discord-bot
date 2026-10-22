@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import random
 import shutil
+import time
 from typing import Optional
 
 from urllib.parse import parse_qs, quote, urlparse
@@ -735,12 +736,23 @@ async def execute_remote_command(cmd: dict) -> None:
                     )
 
 
+LAST_SYNC_STATUS = {
+    "status": "iniciando",
+    "last_sync": None,
+    "sync_url": None,
+    "error": None,
+}
+
+
 async def cloud_sync_loop() -> None:
     """Sincroniza cada 3 segundos las playlists y botones de Cloudflare KV (musika.luisjourney.xyz)."""
     await bot.wait_until_ready()
-    if "localhost" in PUBLIC_WEB_URL:
-        return
     sync_url = f"{PUBLIC_WEB_URL.rstrip('/')}/api/bot/sync"
+    LAST_SYNC_STATUS["sync_url"] = sync_url
+    if "localhost" in PUBLIC_WEB_URL:
+        LAST_SYNC_STATUS["status"] = "omitido_por_localhost"
+        return
+
     async with aiohttp.ClientSession() as session:
         while not bot.is_closed():
             try:
@@ -774,6 +786,9 @@ async def cloud_sync_loop() -> None:
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
+                        LAST_SYNC_STATUS["status"] = "ok"
+                        LAST_SYNC_STATUS["last_sync"] = time.time()
+                        LAST_SYNC_STATUS["error"] = None
                         if "playlists" in data and isinstance(
                             data["playlists"], dict
                         ):
@@ -781,8 +796,12 @@ async def cloud_sync_loop() -> None:
                             playlist_store.save()
                         for cmd in data.get("commands") or []:
                             await execute_remote_command(cmd)
-            except Exception:
-                pass
+                    else:
+                        LAST_SYNC_STATUS["status"] = f"http_{resp.status}"
+                        LAST_SYNC_STATUS["error"] = await resp.text()
+            except Exception as exc:
+                LAST_SYNC_STATUS["status"] = "error"
+                LAST_SYNC_STATUS["error"] = str(exc)
             await asyncio.sleep(3)
 
 
@@ -806,6 +825,9 @@ async def handle_api_state(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "bot_name": str(bot.user) if bot.user else "MusiKa",
+            "version": "v1.2-voice-states",
+            "sync_status": LAST_SYNC_STATUS,
+            "public_web_url": PUBLIC_WEB_URL,
             "playlists": playlist_store.playlists,
             "now_playing": now_playing,
             "queue_length": queue_len,
