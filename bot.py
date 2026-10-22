@@ -493,7 +493,7 @@ async def find_or_connect_voice(
         for guild in guilds:
             if not guild:
                 continue
-            vs = guild.voice_states.get(user_id)
+            vs = guild._voice_states.get(user_id)
             if vs and vs.channel:
                 try:
                     vc = await vs.channel.connect()
@@ -504,11 +504,11 @@ async def find_or_connect_voice(
                 except Exception as exc:
                     print(f"Error conectando al canal del usuario ({user_id}): {exc}")
 
-    # 3. Fallback: buscar mediante guild.voice_states si hay algún humano en canales de voz
+    # 3. Fallback: buscar mediante guild._voice_states si hay algún humano en canales de voz
     for guild in guilds:
         if not guild:
             continue
-        for uid, vs in guild.voice_states.items():
+        for uid, vs in guild._voice_states.items():
             if vs.channel and (not bot.user or uid != bot.user.id):
                 try:
                     vc = await vs.channel.connect()
@@ -546,7 +546,7 @@ async def execute_remote_command(cmd: dict) -> None:
     if ctype == "play_playlist":
         name = cmd.get("name")
         shuffle = bool(cmd.get("shuffle", False))
-        tracks_data = list(playlist_store.playlists.get(name, []))
+        tracks_data = list(cmd.get("tracks") or playlist_store.playlists.get(name, []))
         if not tracks_data:
             return
         if shuffle:
@@ -680,7 +680,7 @@ async def execute_remote_command(cmd: dict) -> None:
         elif slash_cmd == "playlist":
             nombre = opts.get("nombre")
             aleatorio = bool(opts.get("aleatorio", False))
-            tracks_data = list(playlist_store.playlists.get(nombre, []))
+            tracks_data = list(cmd.get("tracks") or playlist_store.playlists.get(nombre, []))
             if not tracks_data:
                 if text_ch:
                     await text_ch.send(
@@ -778,11 +778,13 @@ async def cloud_sync_loop() -> None:
                     except Exception:
                         pass
 
+                want_playlists = (time.time() - LAST_SYNC_STATUS.get("playlists_at", 0)) > 60
                 async with session.post(
                     sync_url,
                     json={
                         "now_playing": now_playing,
                         "queue_length": queue_len,
+                        "want_playlists": want_playlists,
                     },
                     timeout=aiohttp.ClientTimeout(total=5),
                 ) as resp:
@@ -794,6 +796,7 @@ async def cloud_sync_loop() -> None:
                         if "playlists" in data and isinstance(
                             data["playlists"], dict
                         ):
+                            LAST_SYNC_STATUS["playlists_at"] = time.time()
                             playlist_store.playlists = data["playlists"]
                             playlist_store.save()
                         for cmd in data.get("commands") or []:
@@ -849,7 +852,7 @@ async def handle_api_state(request: web.Request) -> web.Response:
                     ),
                     "voice_states": {
                         str(uid): (vs.channel.name if vs.channel else None)
-                        for uid, vs in g.voice_states.items()
+                        for uid, vs in g._voice_states.items()
                     },
                 }
                 for g in bot.guilds

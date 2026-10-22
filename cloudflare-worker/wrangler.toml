@@ -13,3 +13,9 @@ id = "d2ae90b10ab94c6dbb9f96e43bdfb25d"
 [vars]
 BOT_PING_URL = "https://musika-discord-bot.onrender.com/api/state"
 
+
+[[d1_databases]]
+binding = "DB"
+database_name = "musika-db"
+database_id = "d844a229-2aca-44a5-8e5f-aec01c98bfb1"
+

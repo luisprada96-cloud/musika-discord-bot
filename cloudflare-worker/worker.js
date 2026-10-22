@@ -684,21 +684,73 @@ async function resolveTrackMetadata(query) {
   return { title: query, webpage_url: query, duration: null, duration_str: "Canción", thumbnail: null };
 }
 
+// Almacenamiento en D1 (100k escrituras/día gratis) en lugar de KV (solo 1000/día).
+// KV se usa únicamente como fuente de lectura para migrar las playlists antiguas.
 async function getPlaylists(env) {
-  const raw = await env.PLAYLISTS_KV.get("playlists");
-  if (!raw) return {};
-  try { return JSON.parse(raw); } catch (_) { return {}; }
+  try {
+    const row = await env.DB.prepare("SELECT v FROM kv WHERE k = 'playlists'").first();
+    if (row && row.v) return JSON.parse(row.v);
+  } catch (_) {}
+  // Migración única desde KV
+  try {
+    const raw = await env.PLAYLISTS_KV.get("playlists");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      await savePlaylists(env, parsed);
+      return parsed;
+    }
+  } catch (_) {}
+  return {};
 }
 
 async function savePlaylists(env, playlists) {
-  await env.PLAYLISTS_KV.put("playlists", JSON.stringify(playlists));
+  await env.DB.prepare(
+    "INSERT INTO kv (k, v) VALUES ('playlists', ?1) ON CONFLICT(k) DO UPDATE SET v = excluded.v"
+  )
+    .bind(JSON.stringify(playlists))
+    .run();
 }
 
 async function pushCommand(env, cmd) {
-  const raw = await env.PLAYLISTS_KV.get("bot_commands");
-  const list = raw ? JSON.parse(raw) : [];
-  list.push({ ...cmd, ts: Date.now() });
-  await env.PLAYLISTS_KV.put("bot_commands", JSON.stringify(list.slice(-20)));
+  await env.DB.prepare("INSERT INTO commands (payload, created_at) VALUES (?1, ?2)")
+    .bind(JSON.stringify({ ...cmd, ts: Date.now() }), Date.now())
+    .run();
+}
+
+async function popCommands(env) {
+  const { results } = await env.DB.prepare(
+    "SELECT id, payload FROM commands ORDER BY id LIMIT 20"
+  ).all();
+  if (!results || results.length === 0) return [];
+  const maxId = results[results.length - 1].id;
+  await env.DB.prepare("DELETE FROM commands WHERE id <= ?1").bind(maxId).run();
+  // Descartar órdenes de más de 3 minutos (por si el bot tardó demasiado en despertar)
+  const cutoff = Date.now() - 180000;
+  return results
+    .map((r) => {
+      try { return JSON.parse(r.payload); } catch (_) { return null; }
+    })
+    .filter((c) => c && (!c.ts || c.ts > cutoff));
+}
+
+// Comprueba en directo si el contenedor de Render está despierto (sin despertarlo si tarda)
+async function checkRenderAwake(env, timeoutMs) {
+  if (!env.BOT_PING_URL) return null;
+  try {
+    const controller = new AbortController();
+    const tId = setTimeout(() => controller.abort(), timeoutMs);
+    const r = await fetch(env.BOT_PING_URL, {
+      signal: controller.signal,
+      headers: { "User-Agent": "MusiKa-WebCheck/1.0" },
+    });
+    clearTimeout(tId);
+    if (!r.ok) return null;
+    const ct = r.headers.get("content-type") || "";
+    if (!ct.includes("json")) return null;
+    return await r.json();
+  } catch (_) {
+    return null;
+  }
 }
 
 const DISCORD_PUBLIC_KEY = "5d9712c00d7613e94b42461e2753d368bcac18bf7f27e0c132bf42761f3fa4f1";
@@ -735,8 +787,8 @@ let memoryBotState = { now_playing: null, queue_length: 0, updated_at: 0 };
 
 async function getBotState(env) {
   try {
-    const raw = await env.PLAYLISTS_KV.get("bot_state");
-    if (raw) return JSON.parse(raw);
+    const row = await env.DB.prepare("SELECT v FROM kv WHERE k = 'bot_state'").first();
+    if (row && row.v) return JSON.parse(row.v);
   } catch (_) {}
   return memoryBotState;
 }
@@ -744,8 +796,16 @@ async function getBotState(env) {
 async function saveBotState(env, state) {
   memoryBotState = state;
   try {
-    await env.PLAYLISTS_KV.put("bot_state", JSON.stringify(state));
+    await env.DB.prepare(
+      "INSERT INTO kv (k, v) VALUES ('bot_state', ?1) ON CONFLICT(k) DO UPDATE SET v = excluded.v"
+    )
+      .bind(JSON.stringify(state))
+      .run();
   } catch (_) {}
+}
+
+function isAwake(state) {
+  return Boolean(state && state.updated_at && Date.now() - state.updated_at < 20000);
 }
 
 function wakeRenderIfConfigured(env, ctx) {
@@ -821,7 +881,7 @@ export default {
         wakeRenderIfConfigured(env, ctx);
 
         const botState = await getBotState(env);
-        const botAwake = Boolean(botState.updated_at && Date.now() - botState.updated_at < 35000);
+        const botAwake = isAwake(botState);
 
         const userName =
           interaction.member?.nick ||
@@ -830,7 +890,7 @@ export default {
           "Discord";
         const userId = interaction.member?.user?.id || interaction.user?.id;
 
-        await pushCommand(env, {
+        const slashCmd = {
           type: "discord_slash",
           cmd: cmdName,
           options: opts,
@@ -838,7 +898,48 @@ export default {
           channel_id: interaction.channel_id,
           user_id: userId,
           user_name: userName,
-        });
+        };
+        if (cmdName === "info") {
+          return Response.json({
+            type: 4,
+            data: {
+              embeds: [
+                {
+                  title: "🎵 Guía de Funciones — MusiKa Bot",
+                  color: 0x5865f2,
+                  fields: [
+                    {
+                      name: "🎶 Reproducción",
+                      value:
+                        "`/play <nombre o link>` · `/pause` · `/resume` · `/skip` · `/stop` · `/queue`",
+                    },
+                    {
+                      name: "💿 Playlists",
+                      value:
+                        "`/playlist <nombre> [aleatorio]` — listas de la web\n`/ytplaylist <url> [aleatorio] [guardar_en_web]` — playlist de YouTube",
+                    },
+                    {
+                      name: "🌐 Web",
+                      value: "`/web` — https://musika.luisjourney.xyz (crear listas, controlar el bot y despertarlo)",
+                    },
+                  ],
+                  footer: { text: "Entra en un canal de voz antes de pedir música." },
+                },
+              ],
+            },
+          });
+        }
+        try {
+          if (cmdName === "playlist" && opts.nombre) {
+            slashCmd.tracks = (await getPlaylists(env))[opts.nombre] || [];
+          }
+          await pushCommand(env, slashCmd);
+        } catch (err) {
+          return Response.json({
+            type: 4,
+            data: { content: `⚠️ Error interno guardando la orden: \`${err}\`` },
+          });
+        }
 
         const wakeNotice = botAwake
           ? ""
@@ -881,14 +982,20 @@ export default {
     }
 
     if (request.method === "POST" && path === "/api/bot/wake") {
-      wakeRenderIfConfigured(env, ctx);
-      return Response.json({ ok: true, message: "Despertando bot..." });
+      // Esperamos (hasta ~25s) a que Render responda para que el arranque realmente se dispare
+      const data = await checkRenderAwake(env, 25000);
+      return Response.json({
+        ok: true,
+        awake: Boolean(data),
+        message: data ? "Bot despierto" : "Render está arrancando...",
+      });
     }
 
     if (request.method === "GET" && (path === "/api/state" || path === "/api/playlists")) {
       const playlists = await getPlaylists(env);
+      // El bot sincroniza cada 3s: si su último latido es reciente está despierto
       const botState = await getBotState(env);
-      const botAwake = Boolean(botState.updated_at && Date.now() - botState.updated_at < 35000);
+      const botAwake = isAwake(botState);
       return Response.json({
         bot_name: "MusiKa",
         bot_awake: botAwake,
@@ -898,22 +1005,18 @@ export default {
       });
     }
 
-    // Endpoint para sincronización bidireccional del Bot de Discord con Cloudflare KV
+    // Endpoint de latido del bot: guarda estado y le entrega las órdenes pendientes (D1)
     if (request.method === "POST" && path === "/api/bot/sync") {
       const body = await request.json();
-      const newState = {
+      await saveBotState(env, {
         now_playing: body.now_playing || null,
         queue_length: body.queue_length || 0,
         updated_at: Date.now(),
-      };
-      await saveBotState(env, newState);
-      const cmdsRaw = await env.PLAYLISTS_KV.get("bot_commands");
-      const commands = cmdsRaw ? JSON.parse(cmdsRaw) : [];
-      if (commands.length > 0) {
-        await env.PLAYLISTS_KV.delete("bot_commands");
-      }
-      const playlists = await getPlaylists(env);
-      return Response.json({ ok: true, commands, playlists });
+      });
+      const commands = await popCommands(env);
+      const resp = { ok: true, commands };
+      if (body.want_playlists) resp.playlists = await getPlaylists(env);
+      return Response.json(resp);
     }
 
     if (request.method === "PUT" && path.startsWith("/api/playlists/")) {
@@ -976,7 +1079,12 @@ export default {
       const name = decodeURIComponent(matchPlayPlaylist[1]);
       const body = await request.json();
       wakeRenderIfConfigured(env, ctx);
-      await pushCommand(env, { type: "play_playlist", name, shuffle: !!body.shuffle });
+      await pushCommand(env, {
+        type: "play_playlist",
+        name,
+        shuffle: !!body.shuffle,
+        tracks: (await getPlaylists(env))[name] || [],
+      });
       return Response.json({ ok: true, message: `Orden enviada al bot: reproducir "${name}"` });
     }
 
