@@ -445,6 +445,129 @@ async def execute_remote_command(cmd: dict) -> None:
                     state.current = None
                     await vc.disconnect()
 
+    elif ctype == "discord_slash":
+        slash_cmd = cmd.get("cmd")
+        opts = cmd.get("options") or {}
+        guild_id = int(cmd["guild_id"]) if cmd.get("guild_id") else None
+        channel_id = int(cmd["channel_id"]) if cmd.get("channel_id") else None
+        user_name = cmd.get("user_name") or "Discord"
+
+        pref_guild = bot.get_guild(guild_id) if guild_id else None
+        text_ch = (
+            pref_guild.get_channel(channel_id)
+            if (pref_guild and channel_id)
+            else None
+        )
+
+        if slash_cmd in ("skip", "pause", "resume", "stop"):
+            target_guilds = [pref_guild] if pref_guild else list(bot.guilds)
+            for g in target_guilds:
+                if not g or not g.voice_client:
+                    continue
+                vc = g.voice_client
+                st = bot.get_state(g.id)
+                if slash_cmd == "skip" and (vc.is_playing() or vc.is_paused()):
+                    vc.stop()
+                elif slash_cmd == "pause" and vc.is_playing():
+                    vc.pause()
+                elif slash_cmd == "resume" and vc.is_paused():
+                    vc.resume()
+                elif slash_cmd == "stop":
+                    st.queue.clear()
+                    st.current = None
+                    await vc.disconnect()
+            return
+
+        guild, voice_client, err = await find_or_connect_voice(pref_guild)
+        if err or not guild or not voice_client:
+            if text_ch:
+                try:
+                    await text_ch.send(f"❌ {err}")
+                except Exception:
+                    pass
+            return
+
+        state = bot.get_state(guild.id)
+        if text_ch:
+            state.text_channel = text_ch
+
+        if slash_cmd == "play":
+            busqueda = opts.get("busqueda")
+            if not busqueda:
+                return
+            try:
+                track = await asyncio.to_thread(
+                    extract_track, busqueda, user_name
+                )
+                state.queue.append(track)
+                if not voice_client.is_playing() and not voice_client.is_paused():
+                    await play_next_async(guild)
+                elif text_ch:
+                    await text_ch.send(
+                        f"➕ Añadida a la cola: **{track.title}** (`{track.duration_str}`)"
+                    )
+            except Exception as exc:
+                if text_ch:
+                    await text_ch.send(f"⚠️ Error al cargar: `{exc}`")
+
+        elif slash_cmd == "playlist":
+            nombre = opts.get("nombre")
+            aleatorio = bool(opts.get("aleatorio", False))
+            tracks_data = list(playlist_store.playlists.get(nombre, []))
+            if not tracks_data:
+                if text_ch:
+                    await text_ch.send(
+                        f"❌ La lista **{nombre}** no existe o está vacía."
+                    )
+                return
+            if aleatorio:
+                random.shuffle(tracks_data)
+            for item in tracks_data:
+                state.queue.append(
+                    Track(
+                        title=item["title"],
+                        webpage_url=item["webpage_url"],
+                        duration=item.get("duration"),
+                        thumbnail=item.get("thumbnail"),
+                        requested_by=f"{user_name} ({nombre})",
+                        stream_url=None,
+                    )
+                )
+            if not voice_client.is_playing() and not voice_client.is_paused():
+                await play_next_async(guild)
+
+        elif slash_cmd == "ytplaylist":
+            url_pl = opts.get("url")
+            aleatorio = bool(opts.get("aleatorio", False))
+            guardar = opts.get("guardar_en_web")
+            if not url_pl:
+                return
+            try:
+                pl_title, tracks = await asyncio.to_thread(
+                    extract_youtube_playlist, url_pl, user_name
+                )
+                if guardar and str(guardar).strip():
+                    save_name = str(guardar).strip()
+                    saved_tracks = [t.to_saved_dict() for t in tracks]
+                    playlist_store.playlists[save_name] = saved_tracks
+                    playlist_store.save()
+                    async with aiohttp.ClientSession() as session:
+                        await session.put(
+                            f"{PUBLIC_WEB_URL.rstrip('/')}/api/playlists/{quote(save_name)}",
+                            json={"tracks": saved_tracks},
+                        )
+                if aleatorio:
+                    random.shuffle(tracks)
+                for t in tracks:
+                    state.queue.append(t)
+                if not voice_client.is_playing() and not voice_client.is_paused():
+                    await play_next_async(guild)
+            except Exception as exc:
+                if text_ch:
+                    await text_ch.send(
+                        f"⚠️ Error cargando playlist de YouTube: `{exc}`"
+                    )
+
 
 async def cloud_sync_loop() -> None:
     """Sincroniza cada 3 segundos las playlists y botones de Cloudflare KV (musika.luisjourney.xyz)."""
