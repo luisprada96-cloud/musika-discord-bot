@@ -812,7 +812,21 @@ function isAwake(state) {
   return Boolean(state && state.updated_at && Date.now() - state.updated_at < 20000);
 }
 
-function wakeRenderIfConfigured(env, ctx) {
+async function isRaspiActive(env) {
+  try {
+    const row = await env.DB.prepare("SELECT v FROM kv WHERE k = 'last_raspi_seen'").first();
+    if (row && row.v) {
+      return (Date.now() - Number(row.v)) < 45000;
+    }
+  } catch (_) {}
+  return false;
+}
+
+async function wakeRenderIfConfigured(env, ctx) {
+  // ¡Regla de oro de ahorro!: Si la Raspberry Pi está activa en casa,
+  // NUNCA enviamos peticiones HTTP a Render para que permanezca dormido (0 horas consumidas).
+  if (await isRaspiActive(env)) return;
+
   if (env.BOT_PING_URL) {
     ctx.waitUntil(
       fetch(env.BOT_PING_URL, {
@@ -980,18 +994,26 @@ export default {
     }
 
     if (request.method === "GET" && path === "/") {
-      // Al abrir la web, enviamos un toque automático a Render por si estaba dormido
-      wakeRenderIfConfigured(env, ctx);
+      // Al abrir la web, solo enviamos toque si la Raspberry Pi NO está en casa
+      ctx.waitUntil(wakeRenderIfConfigured(env, ctx));
       return new Response(HTML_PAGE, { headers: { "Content-Type": "text/html; charset=utf-8" } });
     }
 
     if (request.method === "POST" && path === "/api/bot/wake") {
-      // Esperamos (hasta ~25s) a que Render responda para que el arranque realmente se dispare
+      if (await isRaspiActive(env)) {
+        return Response.json({
+          ok: true,
+          awake: true,
+          active_instance: "raspiluis",
+          message: "El bot ya está activo en tu Raspberry Pi (0 horas consumidas)",
+        });
+      }
+      // Solo si la Raspberry está apagada, despertamos a Render:
       const data = await checkRenderAwake(env, 25000);
       return Response.json({
         ok: true,
         awake: Boolean(data),
-        message: data ? "Bot despierto" : "Render está arrancando...",
+        message: data ? "Bot despierto en Render" : "Render está arrancando...",
       });
     }
 
