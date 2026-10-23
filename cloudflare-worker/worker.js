@@ -348,10 +348,6 @@ const HTML_PAGE = `<!DOCTYPE html>
         badge.style.color = '#94a3b8';
         wakeBtn.style.display = 'inline-block';
       }
-        badge.textContent = '💤 Bot en Reposo (Ahorrando horas)';
-        badge.style.color = '#fbbf24';
-        wakeBtn.style.display = 'inline-flex';
-      }
 
       const npTitle = document.getElementById('npTitle');
       const npSub = document.getElementById('npSub');
