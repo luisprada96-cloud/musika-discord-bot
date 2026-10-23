@@ -2,6 +2,8 @@
 
 Bot de música para Discord de alta disponibilidad desarrollado en Python (`discord.py` + `yt-dlp` + `FFmpeg`) con **Arquitectura Dual (Raspberry Pi Maestro + Render Respaldo)** y **Panel Web Interactivo 24/7** alojado en Cloudflare Workers + Cloudflare D1 ([musika.luisjourney.xyz](https://musika.luisjourney.xyz)).
 
+> 📖 **Documento de Arquitectura y Continuación:** Si eres un desarrollador o agente IA que se incorpora al proyecto, consulta el manual detallado en **[ARCHITECTURE.md](file:///D:/BotAudioDiscord/ARCHITECTURE.md)** para ver la topología, los flujos de failover, las IPs y los procedimientos de despliegue paso a paso.
+
 ---
 
 ## 🏛️ Arquitectura del Sistema
