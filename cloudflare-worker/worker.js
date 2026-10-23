@@ -340,14 +340,14 @@ const HTML_PAGE = `<!DOCTYPE html>
       const badge = document.getElementById('botStatus');
       const wakeBtn = document.getElementById('wakeBtn');
       if (data.bot_awake) {
-        if (data.active_instance === 'raspiluis') {
-          badge.textContent = '🟢 Bot Activo en Discord [🍓 Raspberry Pi]';
-        } else {
-          badge.textContent = '🟢 Bot Activo en Discord [☁️ Render Respaldo]';
-        }
+        badge.textContent = '🟢 Bot Activo en Discord';
         badge.style.color = '#4ade80';
         wakeBtn.style.display = 'none';
       } else {
+        badge.textContent = '⚪ Bot en Reposo';
+        badge.style.color = '#94a3b8';
+        wakeBtn.style.display = 'inline-block';
+      }
         badge.textContent = '💤 Bot en Reposo (Ahorrando horas)';
         badge.style.color = '#fbbf24';
         wakeBtn.style.display = 'inline-flex';
@@ -1005,16 +1005,15 @@ export default {
         return Response.json({
           ok: true,
           awake: true,
-          active_instance: "raspiluis",
-          message: "El bot ya está activo en tu Raspberry Pi (0 horas consumidas)",
+          message: "El bot ya está activo y listo en Discord",
         });
       }
-      // Solo si la Raspberry está apagada, despertamos a Render:
+      // Solo si no hay bot activo, despertamos al servicio de respaldo en la nube:
       const data = await checkRenderAwake(env, 25000);
       return Response.json({
         ok: true,
         awake: Boolean(data),
-        message: data ? "Bot despierto en Render" : "Render está arrancando...",
+        message: data ? "Bot despierto en Discord" : "Iniciando servicio de respaldo...",
       });
     }
 
