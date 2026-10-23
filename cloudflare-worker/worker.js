@@ -32,7 +32,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     header {
       background: var(--panel);
       border-bottom: 1px solid var(--border);
-      padding: 16px 24px;
+      padding: 16px 36px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -55,17 +55,27 @@ const HTML_PAGE = `<!DOCTYPE html>
       color: #4ade80;
     }
     .container {
-      max-width: 1150px;
-      width: 100%;
-      margin: 24px auto;
-      padding: 0 16px;
+      max-width: 1650px;
+      width: 78%;
+      margin: 28px auto;
+      padding: 0 20px;
       display: grid;
-      grid-template-columns: 320px 1fr;
-      gap: 20px;
+      grid-template-columns: 340px 1fr;
+      gap: 24px;
       flex: 1;
     }
-    @media (max-width: 820px) {
-      .container { grid-template-columns: 1fr; }
+    @media (max-width: 1280px) {
+      .container {
+        width: 88%;
+      }
+    }
+    @media (max-width: 880px) {
+      .container {
+        width: 95%;
+        grid-template-columns: 1fr;
+        margin: 16px auto;
+        padding: 0 12px;
+      }
     }
     .card {
       background: var(--panel);
@@ -174,11 +184,11 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
     .np-title {
       font-weight: 600;
-      font-size: 0.95rem;
+      font-size: 0.98rem;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      max-width: 420px;
+      max-width: 650px;
     }
     .np-sub { font-size: 0.8rem; color: var(--muted); }
     .controls { display: flex; gap: 8px; flex-wrap: wrap; }
