@@ -828,10 +828,12 @@ async def cloud_sync_loop() -> None:
                     except Exception:
                         pass
 
+                instance_name = os.getenv("BOT_INSTANCE_NAME", "render")
                 want_playlists = (time.time() - LAST_SYNC_STATUS.get("playlists_at", 0)) > 60
                 async with session.post(
                     sync_url,
                     json={
+                        "instance": instance_name,
                         "now_playing": now_playing,
                         "queue_length": queue_len,
                         "want_playlists": want_playlists,
@@ -840,7 +842,16 @@ async def cloud_sync_loop() -> None:
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        LAST_SYNC_STATUS["status"] = "ok"
+                        if data.get("standby"):
+                            LAST_SYNC_STATUS["status"] = "standby_raspi_activa"
+                            # Si este bot es Render y la Raspberry Pi está activa, nos desconectamos para no pisarla
+                            for vc in list(bot.voice_clients):
+                                try:
+                                    await vc.disconnect(force=True)
+                                except Exception:
+                                    pass
+                        else:
+                            LAST_SYNC_STATUS["status"] = "ok"
                         LAST_SYNC_STATUS["last_sync"] = time.time()
                         LAST_SYNC_STATUS["error"] = None
                         if "playlists" in data and isinstance(

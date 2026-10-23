@@ -340,7 +340,11 @@ const HTML_PAGE = `<!DOCTYPE html>
       const badge = document.getElementById('botStatus');
       const wakeBtn = document.getElementById('wakeBtn');
       if (data.bot_awake) {
-        badge.textContent = '🟢 Bot Despierto en Discord';
+        if (data.active_instance === 'raspiluis') {
+          badge.textContent = '🟢 Bot Activo en Discord [🍓 Raspberry Pi]';
+        } else {
+          badge.textContent = '🟢 Bot Activo en Discord [☁️ Render Respaldo]';
+        }
         badge.style.color = '#4ade80';
         wakeBtn.style.display = 'none';
       } else {
@@ -993,12 +997,13 @@ export default {
 
     if (request.method === "GET" && (path === "/api/state" || path === "/api/playlists")) {
       const playlists = await getPlaylists(env);
-      // El bot sincroniza cada 3s: si su último latido es reciente está despierto
+      // El bot sincroniza cada 2-3s: si su último latido es reciente está despierto
       const botState = await getBotState(env);
       const botAwake = isAwake(botState);
       return Response.json({
         bot_name: "MusiKa",
         bot_awake: botAwake,
+        active_instance: botAwake ? (botState.active_instance || "render") : null,
         playlists,
         now_playing: botAwake ? botState.now_playing || null : null,
         queue_length: botAwake ? botState.queue_length || 0 : 0,
@@ -1008,13 +1013,45 @@ export default {
     // Endpoint de latido del bot: guarda estado y le entrega las órdenes pendientes (D1)
     if (request.method === "POST" && path === "/api/bot/sync") {
       const body = await request.json();
+      const instance = body.instance || "render";
+      const now = Date.now();
+
+      // Si la señal viene de la Raspberry Pi, actualizamos su último latido en D1
+      if (instance === "raspiluis") {
+        await env.DB.prepare(
+          "INSERT INTO kv (k, v) VALUES ('last_raspi_seen', ?1) ON CONFLICT(k) DO UPDATE SET v = excluded.v"
+        ).bind(String(now)).run().catch(() => {});
+      }
+
+      // Comprobamos si la Raspberry Pi está activa (latido en los últimos 45 segundos)
+      let raspiActive = false;
+      try {
+        const row = await env.DB.prepare("SELECT v FROM kv WHERE k = 'last_raspi_seen'").first();
+        if (row && row.v) {
+          raspiActive = (now - Number(row.v)) < 45000;
+        }
+      } catch (_) {}
+
+      // Si quien llama es Render pero la Raspberry está viva:
+      // Render se pone en modo standby y NO se le entregan comandos para que no colisionen.
+      if (instance !== "raspiluis" && raspiActive) {
+        return Response.json({
+          ok: true,
+          standby: true,
+          active_instance: "raspiluis",
+          commands: [],
+          playlists: body.want_playlists ? await getPlaylists(env) : undefined,
+        });
+      }
+
       await saveBotState(env, {
         now_playing: body.now_playing || null,
         queue_length: body.queue_length || 0,
-        updated_at: Date.now(),
+        updated_at: now,
+        active_instance: instance,
       });
       const commands = await popCommands(env);
-      const resp = { ok: true, commands };
+      const resp = { ok: true, commands, active_instance: instance, standby: false };
       if (body.want_playlists) resp.playlists = await getPlaylists(env);
       return Response.json(resp);
     }
