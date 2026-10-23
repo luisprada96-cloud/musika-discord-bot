@@ -51,11 +51,6 @@ YTDL_OPTIONS = {
     "no_warnings": True,
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["tv_embedded", "ios", "mweb", "android_vr"]
-        }
-    },
 }
 
 YTDL_PLAYLIST_OPTIONS = {
