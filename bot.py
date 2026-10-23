@@ -1359,11 +1359,12 @@ async def ytplaylist_cmd(
     description="Muestra el enlace a la página web para crear y editar playlists",
 )
 async def web_cmd(ctx: commands.Context) -> None:
+    web_domain = urlparse(PUBLIC_WEB_URL).netloc or "musika.luisjourney.xyz"
     embed = discord.Embed(
         title="🌐 Panel Web de Playlists — MusiKa",
         description=(
             f"Entra aquí para crear listas, añadir o borrar canciones y controlar el bot:\n\n"
-            f"👉 **[{PUBLIC_WEB_URL}]({PUBLIC_WEB_URL})**\n\n"
+            f"👉 **[{web_domain}]({PUBLIC_WEB_URL})**\n\n"
             f"*Puedes fijar (pinear) este mensaje en el canal para tenerlo siempre a mano.*"
         ),
         color=discord.Color.blurple(),
@@ -1504,10 +1505,11 @@ async def info_cmd(ctx: commands.Context) -> None:
         inline=False,
     )
 
+    web_domain = urlparse(PUBLIC_WEB_URL).netloc or "musika.luisjourney.xyz"
     embed.add_field(
         name="🌐 Panel Web en Tiempo Real",
         value=(
-            f"• `/web`: Muestra el enlace al panel interactivo: [{PUBLIC_WEB_URL}]({PUBLIC_WEB_URL})\n"
+            f"• `/web`: **[{web_domain}]({PUBLIC_WEB_URL})**\n"
             "  - **Control remoto**: Play, pausa, skip y stop en vivo desde tu navegador.\n"
             "  - **Gestor de playlists**: Crea listas, busca canciones con autocompletado y elimina pistas.\n"
             "  - **Un clic**: Pulsa reproducir en cualquier lista para mandarla directamente al canal de voz."

@@ -887,7 +887,7 @@ export default {
                 {
                   title: "🌐 Panel Web de Playlists — MusiKa",
                   description:
-                    "Entra aquí para crear listas, añadir o borrar canciones y controlar el bot:\n\n👉 **[https://musika.luisjourney.xyz](https://musika.luisjourney.xyz)**",
+                    "Entra aquí para crear listas, añadir o borrar canciones y controlar el bot en vivo:\n\n👉 **[musika.luisjourney.xyz](https://musika.luisjourney.xyz)**\n\n*Haz clic en el enlace para abrir el panel interactivo.*",
                   color: 0x5865f2,
                 },
               ],
@@ -937,8 +937,9 @@ export default {
                         "`/playlist <nombre> [aleatorio]` — listas de la web\n`/ytplaylist <url> [aleatorio] [guardar_en_web]` — playlist de YouTube",
                     },
                     {
-                      name: "🌐 Web",
-                      value: "`/web` — https://musika.luisjourney.xyz (crear listas, controlar el bot y despertarlo)",
+                      name: "🌐 Panel Web Interactivo",
+                      value:
+                        "• `/web` — **[musika.luisjourney.xyz](https://musika.luisjourney.xyz)**\nControl remoto en vivo, creación de playlists con autocompletado y reproducción en 1 clic.",
                     },
                   ],
                   footer: { text: "Entra en un canal de voz antes de pedir música." },
