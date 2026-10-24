@@ -932,7 +932,8 @@ async def cloud_sync_loop() -> None:
                             LAST_SYNC_STATUS["playlists_at"] = time.time()
                             playlist_store.playlists = data["playlists"]
                             playlist_store.save()
-                        for cmd in data.get("commands") or []:
+                        executed_cmds = data.get("commands") or []
+                        for cmd in executed_cmds:
                             entry = {"cmd": cmd, "at": time.time(), "result": "ok"}
                             try:
                                 await execute_remote_command(cmd)
@@ -941,6 +942,10 @@ async def cloud_sync_loop() -> None:
                                 print(f"Error ejecutando comando remoto {cmd}: {exc!r}")
                             RECENT_COMMANDS.append(entry)
                             del RECENT_COMMANDS[:-10]
+                        if executed_cmds:
+                            # Sincronización rápida inmediata: el bot reporta el nuevo estado a Cloudflare sin esperar 2s
+                            await asyncio.sleep(0.15)
+                            continue
                     else:
                         LAST_SYNC_STATUS["status"] = f"http_{resp.status}"
                         LAST_SYNC_STATUS["error"] = await resp.text()

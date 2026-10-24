@@ -420,6 +420,16 @@ const HTML_PAGE = `<!DOCTYPE html>
     let currentTab = 'playlists';
     let currentQueue = [];
     let queueAddPosition = 'end';
+    let lastOptimisticTime = 0;
+
+    function updateQueueBadges() {
+      const qBadge = document.getElementById('queueBadge');
+      if (qBadge) qBadge.textContent = currentQueue.length;
+      const qCountText = document.getElementById('queueCountText');
+      if (qCountText) {
+        qCountText.textContent = \`\${currentQueue.length} \${currentQueue.length === 1 ? 'canción en espera' : 'canciones en espera'}\`;
+      }
+    }
 
     function showToast(msg) {
       const t = document.getElementById('toast');
@@ -456,7 +466,6 @@ const HTML_PAGE = `<!DOCTYPE html>
       const res = await fetch('/api/state');
       const data = await res.json();
       playlists = data.playlists || {};
-      currentQueue = data.queue || [];
 
       const badge = document.getElementById('botStatus');
       const wakeBtn = document.getElementById('wakeBtn');
@@ -488,11 +497,12 @@ const HTML_PAGE = `<!DOCTYPE html>
         npThumb.style.display = 'none';
       }
 
-      const qBadge = document.getElementById('queueBadge');
-      if (qBadge) qBadge.textContent = currentQueue.length;
-      const qCountText = document.getElementById('queueCountText');
-      if (qCountText) {
-        qCountText.textContent = \`\${currentQueue.length} \${currentQueue.length === 1 ? 'canción en espera' : 'canciones en espera'}\`;
+      // Si se hizo una acción optimista recientemente (<2500ms), no sobreescribimos la cola con el snapshot antiguo
+      const isOptimistic = (Date.now() - lastOptimisticTime) < 2500;
+      if (!isOptimistic) {
+        currentQueue = data.queue || [];
+        updateQueueBadges();
+        renderQueue();
       }
 
       renderPlaylists();
@@ -506,8 +516,6 @@ const HTML_PAGE = `<!DOCTYPE html>
         selectedPlaylist = null;
         renderTracks(null);
       }
-
-      renderQueue();
     }
 
     function renderPlaylists() {
@@ -574,8 +582,8 @@ const HTML_PAGE = `<!DOCTYPE html>
           </div>
           <div class="controls">
             <button class="btn-secondary" title="Reproducir inmediatamente en Discord" onclick="playSingleTrack('\${escapeJs(t.webpage_url)}')">▶️ Sonar</button>
-            <button class="btn-secondary" title="Añadir al final de la cola" onclick="queueSingleTrack('\${escapeJs(t.webpage_url)}', 'end')">➕ Cola</button>
-            <button class="btn-secondary" title="Reproducir siguiente en la cola" onclick="queueSingleTrack('\${escapeJs(t.webpage_url)}', 'next')">⚡ Siguiente</button>
+            <button class="btn-secondary" title="Añadir al final de la cola" onclick="queueSingleTrack('\${escapeJs(t.webpage_url)}', 'end', '\${escapeJs(t.title)}', '\${escapeJs(t.thumbnail || '')}', '\${escapeJs(t.duration_str || '')}')">➕ Cola</button>
+            <button class="btn-secondary" title="Reproducir siguiente en la cola" onclick="queueSingleTrack('\${escapeJs(t.webpage_url)}', 'next', '\${escapeJs(t.title)}', '\${escapeJs(t.thumbnail || '')}', '\${escapeJs(t.duration_str || '')}')">⚡ Siguiente</button>
             <button class="btn-red" title="Quitar de la lista" onclick="removeTrack(\${idx})">✖</button>
           </div>
         </div>
@@ -673,18 +681,41 @@ const HTML_PAGE = `<!DOCTYPE html>
       if (!query) return;
       const pos = queueAddPosition || 'end';
       input.value = '';
-      showToast(pos === 'next' ? '⚡ Añadiendo como siguiente...' : '➕ Añadiendo a la cola...');
-      const res = await fetch('/api/queue/add', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ query, position: pos })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        showToast(pos === 'next' ? '⚡ Canción programada como siguiente' : '➕ Canción añadida a la cola');
-        await fetchState();
+
+      // Actualización optimista inmediata (0 ms)
+      const isUrl = query.startsWith('http://') || query.startsWith('https://');
+      const placeholder = {
+        title: query,
+        webpage_url: isUrl ? query : '#',
+        duration_str: 'Cargando...',
+        requested_by: 'Web',
+        thumbnail: null
+      };
+      if (pos === 'next') {
+        currentQueue.unshift(placeholder);
       } else {
-        showToast(\`⚠️ \${data.error || 'Error'}\`);
+        currentQueue.push(placeholder);
+      }
+      lastOptimisticTime = Date.now();
+      updateQueueBadges();
+      renderQueue();
+
+      showToast(pos === 'next' ? '⚡ Canción programada como siguiente' : '➕ Canción añadida a la cola');
+      try {
+        const res = await fetch('/api/queue/add', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ query, position: pos })
+        });
+        if (!res.ok) {
+          const data = await res.json();
+          showToast(\`⚠️ \${data.error || 'Error'}\`);
+          lastOptimisticTime = 0;
+          fetchState();
+        }
+      } catch (err) {
+        lastOptimisticTime = 0;
+        fetchState();
       }
     });
 
@@ -757,51 +788,113 @@ const HTML_PAGE = `<!DOCTYPE html>
       }
     }
 
-    async function queueSingleTrack(url, pos) {
-      showToast(pos === 'next' ? '⚡ Programando siguiente...' : '➕ Añadiendo a la cola...');
-      const res = await fetch('/api/queue/add', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ query: url, position: pos || 'end' })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        showToast(pos === 'next' ? '⚡ Sonará a continuación' : '➕ Añadida a la cola');
-        await fetchState();
+    async function queueSingleTrack(url, pos, trackTitle, trackThumb, trackDuration) {
+      // Actualización optimista inmediata (0 ms)
+      const placeholder = {
+        title: trackTitle || url,
+        webpage_url: url,
+        duration_str: trackDuration || '',
+        requested_by: 'Web',
+        thumbnail: trackThumb || null
+      };
+      if (pos === 'next') {
+        currentQueue.unshift(placeholder);
       } else {
-        showToast(\`⚠️ \${data.error || 'Error'}\`);
+        currentQueue.push(placeholder);
+      }
+      lastOptimisticTime = Date.now();
+      updateQueueBadges();
+      renderQueue();
+
+      showToast(pos === 'next' ? '⚡ Sonará a continuación' : '➕ Añadida a la cola');
+      try {
+        const res = await fetch('/api/queue/add', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ query: url, position: pos || 'end' })
+        });
+        if (!res.ok) {
+          const data = await res.json();
+          showToast(\`⚠️ \${data.error || 'Error'}\`);
+          lastOptimisticTime = 0;
+          fetchState();
+        }
+      } catch (err) {
+        lastOptimisticTime = 0;
+        fetchState();
       }
     }
 
     async function removeQueueTrack(index) {
-      const res = await fetch('/api/queue/remove', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ index })
-      });
-      if (res.ok) {
-        showToast('🗑️ Canción quitada de la cola');
-        await fetchState();
+      if (index < 0 || index >= currentQueue.length) return;
+      // Actualización optimista inmediata (0 ms)
+      currentQueue.splice(index, 1);
+      lastOptimisticTime = Date.now();
+      updateQueueBadges();
+      renderQueue();
+      showToast('🗑️ Canción quitada de la cola');
+
+      try {
+        const res = await fetch('/api/queue/remove', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ index })
+        });
+        if (!res.ok) {
+          showToast('⚠️ No se pudo quitar de la cola');
+          lastOptimisticTime = 0;
+          fetchState();
+        }
+      } catch (err) {
+        lastOptimisticTime = 0;
+        fetchState();
       }
     }
 
     async function moveQueueTrack(fromIndex, toIndex) {
-      const res = await fetch('/api/queue/move', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ from_index: fromIndex, to_index: toIndex })
-      });
-      if (res.ok) {
-        await fetchState();
+      if (fromIndex < 0 || fromIndex >= currentQueue.length || toIndex < 0 || toIndex >= currentQueue.length) return;
+      // Actualización optimista inmediata (0 ms): reordenación instantánea en el navegador
+      const item = currentQueue.splice(fromIndex, 1)[0];
+      currentQueue.splice(toIndex, 0, item);
+      lastOptimisticTime = Date.now();
+      renderQueue();
+
+      try {
+        const res = await fetch('/api/queue/move', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ from_index: fromIndex, to_index: toIndex })
+        });
+        if (!res.ok) {
+          showToast('⚠️ No se pudo mover la canción');
+          lastOptimisticTime = 0;
+          fetchState();
+        }
+      } catch (err) {
+        lastOptimisticTime = 0;
+        fetchState();
       }
     }
 
     async function clearQueue() {
+      if (currentQueue.length === 0) return;
       if (!confirm('¿Seguro que quieres vaciar toda la cola de reproducción?')) return;
-      const res = await fetch('/api/queue/clear', { method: 'POST' });
-      if (res.ok) {
-        showToast('🗑️ Cola vaciada');
-        await fetchState();
+      // Actualización optimista inmediata (0 ms)
+      currentQueue = [];
+      lastOptimisticTime = Date.now();
+      updateQueueBadges();
+      renderQueue();
+      showToast('🗑️ Cola vaciada');
+
+      try {
+        const res = await fetch('/api/queue/clear', { method: 'POST' });
+        if (!res.ok) {
+          lastOptimisticTime = 0;
+          fetchState();
+        }
+      } catch (err) {
+        lastOptimisticTime = 0;
+        fetchState();
       }
     }
 
