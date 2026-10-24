@@ -1,9 +1,11 @@
 name = "musika"
 main = "worker.js"
 compatibility_date = "2024-11-01"
+workers_dev = true
 
 routes = [
-  { pattern = "musika.luisjourney.xyz/*", zone_name = "luisjourney.xyz" }
+  { pattern = "musika.luisjourney.xyz/*", zone_name = "luisjourney.xyz" },
+  { pattern = "app.luisjourney.xyz", custom_domain = true }
 ]
 
 [[kv_namespaces]]
