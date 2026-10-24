@@ -59,9 +59,9 @@ const HTML_PAGE = `<!DOCTYPE html>
       width: 78%;
       margin: 28px auto;
       padding: 0 20px;
-      display: grid;
-      grid-template-columns: 340px 1fr;
-      gap: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
       flex: 1;
     }
     @media (max-width: 1280px) {
@@ -72,10 +72,58 @@ const HTML_PAGE = `<!DOCTYPE html>
     @media (max-width: 880px) {
       .container {
         width: 95%;
-        grid-template-columns: 1fr;
         margin: 16px auto;
         padding: 0 12px;
       }
+    }
+    .playlists-grid {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 24px;
+    }
+    @media (max-width: 880px) {
+      .playlists-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    .tab-nav {
+      display: inline-flex;
+      background: #151923;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 4px;
+      gap: 4px;
+    }
+    .tab-btn {
+      background: transparent;
+      color: var(--muted);
+      border: none;
+      padding: 7px 16px;
+      border-radius: 7px;
+      font-weight: 600;
+      font-size: 0.88rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
+    }
+    .tab-btn:hover {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .tab-btn.active {
+      background: var(--accent);
+      color: #ffffff;
+      box-shadow: 0 2px 8px rgba(88, 101, 242, 0.35);
+    }
+    .tab-badge {
+      background: rgba(255, 255, 255, 0.2);
+      color: #ffffff;
+      padding: 1px 7px;
+      border-radius: 999px;
+      font-size: 0.74rem;
+      font-weight: 700;
     }
     .card {
       background: var(--panel);
@@ -271,7 +319,17 @@ const HTML_PAGE = `<!DOCTYPE html>
 </head>
 <body>
   <header>
-    <div class="brand">🎵 MusiKa — Panel de Playlists</div>
+    <div style="display:flex; align-items:center; gap:20px; flex-wrap:wrap;">
+      <div class="brand">🎵 MusiKa</div>
+      <div class="tab-nav">
+        <button class="tab-btn active" id="tabBtnPlaylists" onclick="switchTab('playlists')">
+          📂 Mis Playlists
+        </button>
+        <button class="tab-btn" id="tabBtnQueue" onclick="switchTab('queue')">
+          📋 Cola en Vivo <span id="queueBadge" class="tab-badge">0</span>
+        </button>
+      </div>
+    </div>
     <div style="display:flex; align-items:center; gap:10px;">
       <div id="botStatus" class="status-badge">☁️ Conectando...</div>
       <button id="wakeBtn" class="btn-secondary" style="display:none; padding:6px 12px; font-size:0.82rem;" onclick="wakeBot()">⚡ Despertar Bot</button>
@@ -279,29 +337,30 @@ const HTML_PAGE = `<!DOCTYPE html>
   </header>
 
   <div class="container">
-    <div class="card">
-      <h2>📂 Tus Playlists</h2>
-      <form id="createPlaylistForm" class="input-row">
-        <input type="text" id="newPlaylistName" placeholder="Nombre de nueva lista..." required />
-        <button type="submit">➕ Crear</button>
-      </form>
-      <div id="playlistList" class="playlist-list"></div>
+    <div class="now-playing-bar">
+      <div class="np-info">
+        <img id="npThumb" class="np-thumb" src="" alt="" style="display:none;" />
+        <div>
+          <div id="npTitle" class="np-title">Nada sonando ahora mismo</div>
+          <div id="npSub" class="np-sub">Usa /play o /playlist en Discord o lanza una lista desde aquí</div>
+        </div>
+      </div>
+      <div class="controls">
+        <button class="btn-secondary" onclick="playerAction('pause_resume')">⏯️ Pausar/Reanudar</button>
+        <button class="btn-secondary" onclick="playerAction('skip')">⏭️ Saltar</button>
+        <button class="btn-red" onclick="playerAction('stop')">⏹️ Parar</button>
+      </div>
     </div>
 
-    <div style="display: flex; flex-direction: column; gap: 20px;">
-      <div class="now-playing-bar">
-        <div class="np-info">
-          <img id="npThumb" class="np-thumb" src="" alt="" style="display:none;" />
-          <div>
-            <div id="npTitle" class="np-title">Nada sonando ahora mismo</div>
-            <div id="npSub" class="np-sub">Usa /play o /playlist en Discord o lanza una lista desde aquí</div>
-          </div>
-        </div>
-        <div class="controls">
-          <button class="btn-secondary" onclick="playerAction('pause_resume')">⏯️ Pausar/Reanudar</button>
-          <button class="btn-secondary" onclick="playerAction('skip')">⏭️ Saltar</button>
-          <button class="btn-red" onclick="playerAction('stop')">⏹️ Parar</button>
-        </div>
+    <!-- PESTAÑA 1: PLAYLISTS -->
+    <div id="viewPlaylists" class="playlists-grid">
+      <div class="card">
+        <h2>📂 Tus Playlists</h2>
+        <form id="createPlaylistForm" class="input-row">
+          <input type="text" id="newPlaylistName" placeholder="Nombre de nueva lista..." required />
+          <button type="submit">➕ Crear</button>
+        </form>
+        <div id="playlistList" class="playlist-list"></div>
       </div>
 
       <div class="card">
@@ -313,6 +372,7 @@ const HTML_PAGE = `<!DOCTYPE html>
           <div class="controls" id="playlistActions" style="display:none;">
             <button class="btn-green" onclick="playCurrentPlaylist(false)">▶️ Sonar en Discord</button>
             <button class="btn-secondary" onclick="playCurrentPlaylist(true)">🔀 Shuffle</button>
+            <button class="btn-secondary" onclick="enqueueCurrentPlaylist()">➕ A la Cola</button>
             <button class="btn-red" onclick="deleteCurrentPlaylist()">🗑️ Borrar Lista</button>
           </div>
         </div>
@@ -327,6 +387,29 @@ const HTML_PAGE = `<!DOCTYPE html>
         </div>
       </div>
     </div>
+
+    <!-- PESTAÑA 2: COLA EN VIVO -->
+    <div id="viewQueue" class="card" style="display:none;">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <div>
+          <h2>📋 Cola de Reproducción en Discord</h2>
+          <div id="queueCountText" style="font-size:0.82rem; color:var(--muted); margin-top:2px;">0 canciones en espera</div>
+        </div>
+        <div class="controls">
+          <button class="btn-red" onclick="clearQueue()">🗑️ Vaciar Cola</button>
+        </div>
+      </div>
+
+      <form id="addQueueForm" class="input-row">
+        <input type="text" id="queueQueryInput" placeholder="Buscar canción o pegar link de YouTube / SoundCloud para la cola..." required />
+        <button type="submit" class="btn-green" onclick="setQueueAddPos('end')">➕ Añadir a la Cola</button>
+        <button type="submit" class="btn-secondary" onclick="setQueueAddPos('next')">⚡ Reproducir Siguiente</button>
+      </form>
+
+      <div id="liveQueueList" class="track-list">
+        <div class="empty-state">📭 La cola está vacía. Añade canciones arriba o lanza una playlist.</div>
+      </div>
+    </div>
   </div>
 
   <div id="toast" class="toast"></div>
@@ -334,6 +417,9 @@ const HTML_PAGE = `<!DOCTYPE html>
   <script>
     let playlists = {};
     let selectedPlaylist = null;
+    let currentTab = 'playlists';
+    let currentQueue = [];
+    let queueAddPosition = 'end';
 
     function showToast(msg) {
       const t = document.getElementById('toast');
@@ -342,10 +428,35 @@ const HTML_PAGE = `<!DOCTYPE html>
       setTimeout(() => t.classList.remove('show'), 3200);
     }
 
+    function switchTab(tab) {
+      currentTab = tab;
+      const btnPlaylists = document.getElementById('tabBtnPlaylists');
+      const btnQueue = document.getElementById('tabBtnQueue');
+      const viewPlaylists = document.getElementById('viewPlaylists');
+      const viewQueue = document.getElementById('viewQueue');
+      if (tab === 'playlists') {
+        btnPlaylists.classList.add('active');
+        btnQueue.classList.remove('active');
+        viewPlaylists.style.display = 'grid';
+        viewQueue.style.display = 'none';
+      } else {
+        btnPlaylists.classList.remove('active');
+        btnQueue.classList.add('active');
+        viewPlaylists.style.display = 'none';
+        viewQueue.style.display = 'flex';
+        renderQueue();
+      }
+    }
+
+    function setQueueAddPos(pos) {
+      queueAddPosition = pos;
+    }
+
     async function fetchState() {
       const res = await fetch('/api/state');
       const data = await res.json();
       playlists = data.playlists || {};
+      currentQueue = data.queue || [];
 
       const badge = document.getElementById('botStatus');
       const wakeBtn = document.getElementById('wakeBtn');
@@ -364,7 +475,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       const npThumb = document.getElementById('npThumb');
       if (data.now_playing) {
         npTitle.textContent = \`🎶 \${data.now_playing.title}\`;
-        npSub.textContent = \`Duración: \${data.now_playing.duration_str} • En cola: \${data.queue_length || 0} más\`;
+        npSub.textContent = \`Duración: \${data.now_playing.duration_str} • En cola: \${currentQueue.length} más\`;
         if (data.now_playing.thumbnail) {
           npThumb.src = data.now_playing.thumbnail;
           npThumb.style.display = 'block';
@@ -375,6 +486,13 @@ const HTML_PAGE = `<!DOCTYPE html>
         npTitle.textContent = 'Nada sonando ahora mismo';
         npSub.textContent = 'Entra a un canal de voz en Discord y dale a ▶️ Sonar en Discord';
         npThumb.style.display = 'none';
+      }
+
+      const qBadge = document.getElementById('queueBadge');
+      if (qBadge) qBadge.textContent = currentQueue.length;
+      const qCountText = document.getElementById('queueCountText');
+      if (qCountText) {
+        qCountText.textContent = \`\${currentQueue.length} \${currentQueue.length === 1 ? 'canción en espera' : 'canciones en espera'}\`;
       }
 
       renderPlaylists();
@@ -388,6 +506,8 @@ const HTML_PAGE = `<!DOCTYPE html>
         selectedPlaylist = null;
         renderTracks(null);
       }
+
+      renderQueue();
     }
 
     function renderPlaylists() {
@@ -453,11 +573,46 @@ const HTML_PAGE = `<!DOCTYPE html>
             </div>
           </div>
           <div class="controls">
-            <button class="btn-secondary" title="Reproducir en Discord" onclick="playSingleTrack('\${escapeJs(t.webpage_url)}')">▶️ Sonar</button>
+            <button class="btn-secondary" title="Reproducir inmediatamente en Discord" onclick="playSingleTrack('\${escapeJs(t.webpage_url)}')">▶️ Sonar</button>
+            <button class="btn-secondary" title="Añadir al final de la cola" onclick="queueSingleTrack('\${escapeJs(t.webpage_url)}', 'end')">➕ Cola</button>
+            <button class="btn-secondary" title="Reproducir siguiente en la cola" onclick="queueSingleTrack('\${escapeJs(t.webpage_url)}', 'next')">⚡ Siguiente</button>
             <button class="btn-red" title="Quitar de la lista" onclick="removeTrack(\${idx})">✖</button>
           </div>
         </div>
       \`).join('');
+    }
+
+    function renderQueue() {
+      const listEl = document.getElementById('liveQueueList');
+      if (!listEl) return;
+      if (!currentQueue || currentQueue.length === 0) {
+        listEl.innerHTML = '<div class="empty-state">📭 La cola está vacía. Añade canciones arriba o lanza una playlist.</div>';
+        return;
+      }
+
+      listEl.innerHTML = currentQueue.map((t, idx) => {
+        const canMoveUp = idx > 0;
+        const canMoveDown = idx < currentQueue.length - 1;
+        const reqBy = t.requested_by ? \` • Solicitada por: \${escapeHtml(t.requested_by)}\` : '';
+        return \`
+          <div class="track-row">
+            <div class="track-left">
+              <span class="track-num">\${idx + 1}.</span>
+              \${t.thumbnail ? \`<img class="track-thumb" src="\${escapeHtml(t.thumbnail)}" alt="" />\` : '<div class="track-thumb"></div>'}
+              <div class="track-meta">
+                <a class="track-title" href="\${escapeHtml(t.webpage_url)}" target="_blank" rel="noopener">\${escapeHtml(t.title)}</a>
+                <span class="track-duration">⏱️ \${escapeHtml(t.duration_str || '')}\${reqBy}</span>
+              </div>
+            </div>
+            <div class="controls">
+              \${canMoveUp ? \`<button class="btn-secondary" title="Poner la primera para que suene siguiente" onclick="moveQueueTrack(\${idx}, 0)">🔝</button>\` : ''}
+              \${canMoveUp ? \`<button class="btn-secondary" title="Subir de puesto" onclick="moveQueueTrack(\${idx}, \${idx - 1})">⬆️</button>\` : ''}
+              \${canMoveDown ? \`<button class="btn-secondary" title="Bajar de puesto" onclick="moveQueueTrack(\${idx}, \${idx + 1})">⬇️</button>\` : ''}
+              <button class="btn-red" title="Quitar de la cola" onclick="removeQueueTrack(\${idx})">✖</button>
+            </div>
+          </div>
+        \`;
+      }).join('');
     }
 
     document.getElementById('createPlaylistForm').addEventListener('submit', async (e) => {
@@ -511,6 +666,28 @@ const HTML_PAGE = `<!DOCTYPE html>
       }
     });
 
+    document.getElementById('addQueueForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = document.getElementById('queueQueryInput');
+      const query = input.value.trim();
+      if (!query) return;
+      const pos = queueAddPosition || 'end';
+      input.value = '';
+      showToast(pos === 'next' ? '⚡ Añadiendo como siguiente...' : '➕ Añadiendo a la cola...');
+      const res = await fetch('/api/queue/add', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ query, position: pos })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(pos === 'next' ? '⚡ Canción programada como siguiente' : '➕ Canción añadida a la cola');
+        await fetchState();
+      } else {
+        showToast(\`⚠️ \${data.error || 'Error'}\`);
+      }
+    });
+
     async function removeTrack(index) {
       if (!selectedPlaylist) return;
       const res = await fetch(\`/api/playlists/\${encodeURIComponent(selectedPlaylist)}/tracks/\${index}\`, {
@@ -551,6 +728,21 @@ const HTML_PAGE = `<!DOCTYPE html>
       }
     }
 
+    async function enqueueCurrentPlaylist() {
+      if (!selectedPlaylist) return;
+      showToast(\`➕ Añadiendo lista "\${selectedPlaylist}" a la cola...\`);
+      const res = await fetch(\`/api/playlists/\${encodeURIComponent(selectedPlaylist)}/enqueue\`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(\`➕ Playlist "\${selectedPlaylist}" añadida a la cola\`);
+        await fetchState();
+      } else {
+        showToast(\`⚠️ \${data.error || 'Error'}\`);
+      }
+    }
+
     async function playSingleTrack(url) {
       const res = await fetch('/api/player/play', {
         method: 'POST',
@@ -562,6 +754,54 @@ const HTML_PAGE = `<!DOCTYPE html>
         showToast(\`▶️ \${data.message}\`);
       } else {
         showToast(\`⚠️ \${data.error}\`);
+      }
+    }
+
+    async function queueSingleTrack(url, pos) {
+      showToast(pos === 'next' ? '⚡ Programando siguiente...' : '➕ Añadiendo a la cola...');
+      const res = await fetch('/api/queue/add', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ query: url, position: pos || 'end' })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(pos === 'next' ? '⚡ Sonará a continuación' : '➕ Añadida a la cola');
+        await fetchState();
+      } else {
+        showToast(\`⚠️ \${data.error || 'Error'}\`);
+      }
+    }
+
+    async function removeQueueTrack(index) {
+      const res = await fetch('/api/queue/remove', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ index })
+      });
+      if (res.ok) {
+        showToast('🗑️ Canción quitada de la cola');
+        await fetchState();
+      }
+    }
+
+    async function moveQueueTrack(fromIndex, toIndex) {
+      const res = await fetch('/api/queue/move', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ from_index: fromIndex, to_index: toIndex })
+      });
+      if (res.ok) {
+        await fetchState();
+      }
+    }
+
+    async function clearQueue() {
+      if (!confirm('¿Seguro que quieres vaciar toda la cola de reproducción?')) return;
+      const res = await fetch('/api/queue/clear', { method: 'POST' });
+      if (res.ok) {
+        showToast('🗑️ Cola vaciada');
+        await fetchState();
       }
     }
 
@@ -793,7 +1033,7 @@ async function verifyDiscordRequest(request, rawBody) {
   }
 }
 
-let memoryBotState = { now_playing: null, queue_length: 0, updated_at: 0 };
+let memoryBotState = { now_playing: null, queue: [], queue_length: 0, updated_at: 0 };
 
 async function getBotState(env) {
   try {
@@ -1034,7 +1274,8 @@ export default {
         active_instance: botAwake ? (botState.active_instance || "render") : null,
         playlists,
         now_playing: botAwake ? botState.now_playing || null : null,
-        queue_length: botAwake ? botState.queue_length || 0 : 0,
+        queue: botAwake ? (botState.queue || []) : [],
+        queue_length: botAwake ? (botState.queue_length || (botState.queue ? botState.queue.length : 0)) : 0,
       });
     }
 
@@ -1074,7 +1315,8 @@ export default {
 
       await saveBotState(env, {
         now_playing: body.now_playing || null,
-        queue_length: body.queue_length || 0,
+        queue: body.queue || [],
+        queue_length: body.queue_length || (body.queue ? body.queue.length : 0),
         updated_at: now,
         active_instance: instance,
       });
@@ -1166,6 +1408,66 @@ export default {
       wakeRenderIfConfigured(env, ctx);
       await pushCommand(env, { type: "action", action });
       return Response.json({ ok: true, message: `Acción enviada: ${action}` });
+    }
+
+    if (request.method === "POST" && path === "/api/queue/add") {
+      const body = await request.json();
+      const query = (body.query || "").trim();
+      const position = body.position === "next" ? "next" : "end";
+      if (!query) return Response.json({ error: "Canción vacía" }, { status: 400 });
+      wakeRenderIfConfigured(env, ctx);
+      await pushCommand(env, {
+        type: "queue_add",
+        query,
+        position,
+      });
+      return Response.json({ ok: true, message: position === "next" ? "Programada siguiente" : "Añadida a la cola" });
+    }
+
+    if (request.method === "POST" && path === "/api/queue/remove") {
+      const body = await request.json();
+      const index = typeof body.index === "number" ? body.index : parseInt(body.index, 10);
+      wakeRenderIfConfigured(env, ctx);
+      await pushCommand(env, {
+        type: "queue_remove",
+        index,
+      });
+      return Response.json({ ok: true, message: "Eliminada de la cola" });
+    }
+
+    if (request.method === "POST" && path === "/api/queue/move") {
+      const body = await request.json();
+      const from_index = typeof body.from_index === "number" ? body.from_index : parseInt(body.from_index, 10);
+      const to_index = typeof body.to_index === "number" ? body.to_index : parseInt(body.to_index, 10);
+      wakeRenderIfConfigured(env, ctx);
+      await pushCommand(env, {
+        type: "queue_move",
+        from_index,
+        to_index,
+      });
+      return Response.json({ ok: true, message: "Movida en la cola" });
+    }
+
+    if (request.method === "POST" && path === "/api/queue/clear") {
+      wakeRenderIfConfigured(env, ctx);
+      await pushCommand(env, {
+        type: "queue_clear",
+      });
+      return Response.json({ ok: true, message: "Cola vaciada" });
+    }
+
+    const matchEnqueuePlaylist = path.match(/^\/api\/playlists\/([^/]+)\/enqueue$/);
+    if (request.method === "POST" && matchEnqueuePlaylist) {
+      const name = decodeURIComponent(matchEnqueuePlaylist[1]);
+      const playlists = await getPlaylists(env);
+      if (!playlists[name]) return Response.json({ error: "No existe la lista" }, { status: 404 });
+      wakeRenderIfConfigured(env, ctx);
+      await pushCommand(env, {
+        type: "enqueue_playlist",
+        name,
+        tracks: playlists[name] || [],
+      });
+      return Response.json({ ok: true, message: `Playlist "${name}" encolada` });
     }
 
     return new Response("Not Found", { status: 404 });

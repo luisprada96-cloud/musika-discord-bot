@@ -95,6 +95,7 @@ class Track:
             "duration": self.duration,
             "duration_str": self.duration_str,
             "thumbnail": self.thumbnail,
+            "requested_by": self.requested_by,
         }
 
 
@@ -643,6 +644,78 @@ async def execute_remote_command(cmd: dict) -> None:
                     state.current = None
                     await vc.disconnect()
 
+    elif ctype == "queue_add":
+        query = cmd.get("query")
+        pos = cmd.get("position", "end")
+        requested_by = cmd.get("requested_by", "Web")
+        if not query:
+            return
+        guild, voice_client, err = await find_or_connect_voice()
+        if err or not guild or not voice_client:
+            return
+        try:
+            track = await asyncio.to_thread(extract_track, query, requested_by)
+            state = bot.get_state(guild.id)
+            if pos == "next":
+                state.queue.appendleft(track)
+            else:
+                state.queue.append(track)
+            if not voice_client.is_playing() and not voice_client.is_paused():
+                await play_next_async(guild)
+            else:
+                trigger_preload(guild)
+        except Exception as exc:
+            print(f"Error en queue_add: {exc}")
+
+    elif ctype == "queue_remove":
+        index = int(cmd.get("index", -1))
+        for guild in bot.guilds:
+            state = bot.get_state(guild.id)
+            if 0 <= index < len(state.queue):
+                del state.queue[index]
+                trigger_preload(guild)
+
+    elif ctype == "queue_move":
+        from_idx = int(cmd.get("from_index", -1))
+        to_idx = int(cmd.get("to_index", -1))
+        for guild in bot.guilds:
+            state = bot.get_state(guild.id)
+            if 0 <= from_idx < len(state.queue) and 0 <= to_idx < len(state.queue):
+                t = state.queue[from_idx]
+                del state.queue[from_idx]
+                state.queue.insert(to_idx, t)
+                trigger_preload(guild)
+
+    elif ctype == "queue_clear":
+        for guild in bot.guilds:
+            state = bot.get_state(guild.id)
+            state.queue.clear()
+
+    elif ctype == "enqueue_playlist":
+        name = cmd.get("name")
+        tracks_data = list(cmd.get("tracks") or playlist_store.playlists.get(name, []))
+        if not tracks_data:
+            return
+        guild, voice_client, err = await find_or_connect_voice()
+        if err or not guild or not voice_client:
+            return
+        state = bot.get_state(guild.id)
+        for item in tracks_data:
+            state.queue.append(
+                Track(
+                    title=item["title"],
+                    webpage_url=item["webpage_url"],
+                    duration=item.get("duration"),
+                    thumbnail=item.get("thumbnail"),
+                    requested_by=f"Web ({name})",
+                    stream_url=None,
+                )
+            )
+        if not voice_client.is_playing() and not voice_client.is_paused():
+            await play_next_async(guild)
+        else:
+            trigger_preload(guild)
+
     elif ctype == "discord_slash":
         slash_cmd = cmd.get("cmd")
         opts = cmd.get("options") or {}
@@ -804,11 +877,14 @@ async def cloud_sync_loop() -> None:
         while not bot.is_closed():
             try:
                 now_playing = None
+                queue_tracks = []
                 queue_len = 0
                 for guild in bot.guilds:
                     st = bot.get_state(guild.id)
-                    if st.current:
-                        now_playing = st.current.to_saved_dict()
+                    if st.current or st.queue:
+                        if st.current:
+                            now_playing = st.current.to_saved_dict()
+                        queue_tracks = [t.to_saved_dict() for t in st.queue]
                         queue_len = len(st.queue)
                         break
 
@@ -831,6 +907,7 @@ async def cloud_sync_loop() -> None:
                         "instance": instance_name,
                         "now_playing": now_playing,
                         "queue_length": queue_len,
+                        "queue": queue_tracks,
                         "want_playlists": want_playlists,
                     },
                     timeout=aiohttp.ClientTimeout(total=5),
@@ -882,11 +959,14 @@ async def handle_index(request: web.Request) -> web.Response:
 
 async def handle_api_state(request: web.Request) -> web.Response:
     now_playing = None
+    queue_tracks = []
     queue_len = 0
     for guild in bot.guilds:
         st = bot.get_state(guild.id)
-        if st.current:
-            now_playing = st.current.to_saved_dict()
+        if st.current or st.queue:
+            if st.current:
+                now_playing = st.current.to_saved_dict()
+            queue_tracks = [t.to_saved_dict() for t in st.queue]
             queue_len = len(st.queue)
             break
 
@@ -916,6 +996,7 @@ async def handle_api_state(request: web.Request) -> web.Response:
             "playlists": playlist_store.playlists,
             "now_playing": now_playing,
             "queue_length": queue_len,
+            "queue": queue_tracks,
         }
     )
 
