@@ -1,11 +1,15 @@
 import asyncio
+import base64
 from collections import deque
 from dataclasses import asdict, dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
 import random
 import shutil
+import subprocess
+import tempfile
 import time
 from typing import Optional
 
@@ -13,6 +17,8 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import aiohttp
 from aiohttp import web
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -227,10 +233,160 @@ def fetch_youtube_metadata(query: str) -> tuple[Optional[str], Optional[str], Op
     return None, None, None
 
 
+def is_suno_url(query: str) -> Optional[str]:
+    """Detecta si la query es un enlace o UUID de Suno AI y devuelve el UUID limpio."""
+    q = query.strip()
+    if "suno.com" in q.lower() or "suno.ai" in q.lower():
+        m = re.search(
+            r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+            q,
+            re.IGNORECASE,
+        )
+        if m:
+            return m.group(1).lower()
+        if q.startswith(("http://", "https://")):
+            try:
+                req = urllib.request.Request(
+                    q, headers={"User-Agent": "Mozilla/5.0"}
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    final_url = resp.geturl()
+                    m2 = re.search(
+                        r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+                        final_url,
+                        re.IGNORECASE,
+                    )
+                    if m2:
+                        return m2.group(1).lower()
+            except Exception:
+                pass
+    return None
+
+
+def extract_suno_track(query: str, requested_by: str, uuid: str) -> Track:
+    """Descifra y prepara una pista de Suno AI con AES-128-CTR para su reproducción fluida."""
+    title = f"Suno AI ({uuid[:8]})"
+    thumbnail = f"https://cdn2.suno.ai/image_large_{uuid}.jpeg"
+
+    # 1. Metadatos oficiales vía oEmbed
+    try:
+        req = urllib.request.Request(
+            f"https://studio-api-prod.suno.com/api/oembed?url=https%3A%2F%2Fsuno.com%2Fsong%2F{uuid}",
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if data.get("title"):
+                title = f"✨ {data['title']} (Suno AI)"
+    except Exception as exc:
+        print(f"Error obteniendo oembed de Suno ({uuid}): {exc}")
+
+    # 2. Claves de descifrado Mango / Rights
+    rights_url = "https://studio-api-prod.suno.com/api/mango/rights"
+    payload = json.dumps(
+        {"content_params": {"content_id": uuid, "content_type": "clip"}}
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        rights_url,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            rights = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        raise ValueError(
+            f"No se pudieron obtener los permisos de audio de Suno para {uuid}: {exc}"
+        )
+
+    glt = rights.get("glt")
+    enc_key_b64 = rights.get("key")
+    enc_iv_b64 = rights.get("iv")
+
+    if not glt or not enc_key_b64 or not enc_iv_b64:
+        raise ValueError(f"Respuesta de derechos de Suno inválida para {uuid}")
+
+    master_key = hashlib.sha256(glt.encode("utf-8")).digest()
+    aesgcm = AESGCM(master_key)
+    aad = uuid.encode("utf-8")
+
+    raw_key_data = base64.b64decode(enc_key_b64)
+    raw_iv_data = base64.b64decode(enc_iv_b64)
+
+    real_key = aesgcm.decrypt(raw_key_data[:12], raw_key_data[12:], aad)
+    real_iv = aesgcm.decrypt(raw_iv_data[:12], raw_iv_data[12:], aad)
+
+    # 3. Descargar el archivo cifrado (.m4a) de CloudFront
+    audio_url = f"https://d2lwuy8qc234o3.cloudfront.net/1/clip/{uuid}.m4a"
+    req_audio = urllib.request.Request(
+        audio_url, headers={"User-Agent": "Mozilla/5.0"}
+    )
+    with urllib.request.urlopen(req_audio, timeout=20) as resp:
+        enc_bytes = resp.read()
+
+    # 4. Descifrar con AES-128-CTR
+    cipher = Cipher(algorithms.AES(real_key), modes.CTR(real_iv))
+    dec = cipher.decryptor()
+    decrypted = dec.update(enc_bytes) + dec.finalize()
+
+    # 5. Guardar en archivo temporal local
+    temp_path = os.path.join(tempfile.gettempdir(), f"suno_{uuid}.m4a")
+    with open(temp_path, "wb") as f:
+        f.write(decrypted)
+
+    # 6. Extraer duración exacta con ffmpeg
+    duration = None
+    try:
+        p = subprocess.run(
+            [FFMPEG_EXECUTABLE, "-i", temp_path],
+            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            text=True,
+            errors="ignore",
+        )
+        m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.?\d*)", p.stderr)
+        if m:
+            h, mn, s = m.groups()
+            duration = int(h) * 3600 + int(mn) * 60 + int(float(s))
+    except Exception as exc:
+        print(f"Error extrayendo duración con ffmpeg ({uuid}): {exc}")
+
+    return Track(
+        title=title,
+        webpage_url=f"https://suno.com/song/{uuid}",
+        duration=duration,
+        thumbnail=thumbnail,
+        requested_by=requested_by,
+        stream_url=temp_path,
+    )
+
+
+def cleanup_temp_track(track: Optional[Track]) -> None:
+    """Elimina archivos temporales generados (p. ej. pistas de Suno) para no saturar disco."""
+    if (
+        track
+        and track.stream_url
+        and "suno_" in track.stream_url
+        and os.path.exists(track.stream_url)
+    ):
+        try:
+            os.remove(track.stream_url)
+            print(f"Limpiado archivo temporal: {track.stream_url}")
+        except Exception as exc:
+            print(f"Error al limpiar {track.stream_url}: {exc}")
+
+
 def extract_track(
     query: str, requested_by: str, fallback_title: Optional[str] = None
 ) -> Track:
-    """Extrae el audio priorizando YouTube y evitando previews de 30s si la IP cloud está limitada."""
+    """Extrae el audio priorizando Suno/YouTube y evitando previews de 30s si la IP cloud está limitada."""
+    suno_uuid = is_suno_url(query)
+    if suno_uuid:
+        return extract_suno_track(query, requested_by, suno_uuid)
+
     yt_title, yt_url, yt_thumb = fetch_youtube_metadata(query)
     effective_title = fallback_title or yt_title or query
     search_query = (
@@ -488,16 +644,28 @@ async def play_next_async(guild: discord.Guild) -> None:
             return
 
     state.current = next_track
+    played_track = next_track
+
+    is_remote = next_track.stream_url.startswith(("http://", "https://"))
+    ffmpeg_opts = {
+        "before_options": (
+            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin"
+            if is_remote
+            else "-nostdin"
+        ),
+        "options": "-vn",
+    }
 
     source = discord.FFmpegPCMAudio(
         next_track.stream_url,
         executable=FFMPEG_EXECUTABLE,
-        **FFMPEG_OPTIONS,
+        **ffmpeg_opts,
     )
 
     def after_playing(error: Optional[Exception]) -> None:
         if error:
             print(f"Error de reproducción: {error}")
+        cleanup_temp_track(played_track)
         asyncio.run_coroutine_threadsafe(play_next_async(guild), bot.loop)
 
     voice_client.play(source, after=after_playing)
@@ -655,6 +823,9 @@ async def execute_remote_command(cmd: dict) -> None:
                     if vc.is_playing() or vc.is_paused():
                         vc.stop()
                 elif action == "stop":
+                    cleanup_temp_track(state.current)
+                    for t in state.queue:
+                        cleanup_temp_track(t)
                     state.queue.clear()
                     state.current = None
                     await vc.disconnect()
@@ -687,6 +858,8 @@ async def execute_remote_command(cmd: dict) -> None:
         for guild in bot.guilds:
             state = bot.get_state(guild.id)
             if 0 <= index < len(state.queue):
+                removed = list(state.queue)[index]
+                cleanup_temp_track(removed)
                 del state.queue[index]
                 trigger_preload(guild)
 
@@ -704,6 +877,8 @@ async def execute_remote_command(cmd: dict) -> None:
     elif ctype == "queue_clear":
         for guild in bot.guilds:
             state = bot.get_state(guild.id)
+            for t in state.queue:
+                cleanup_temp_track(t)
             state.queue.clear()
 
     elif ctype == "enqueue_playlist":
@@ -760,6 +935,9 @@ async def execute_remote_command(cmd: dict) -> None:
                 elif slash_cmd == "resume" and vc.is_paused():
                     vc.resume()
                 elif slash_cmd == "stop":
+                    cleanup_temp_track(st.current)
+                    for t in st.queue:
+                        cleanup_temp_track(t)
                     st.queue.clear()
                     st.current = None
                     await vc.disconnect()
@@ -1208,6 +1386,9 @@ async def handle_player_action(request: web.Request) -> web.Response:
                         {"ok": True, "message": "⏭️ Canción saltada"}
                     )
             elif action == "stop":
+                cleanup_temp_track(state.current)
+                for t in state.queue:
+                    cleanup_temp_track(t)
                 state.queue.clear()
                 state.current = None
                 await vc.disconnect()
@@ -1563,6 +1744,9 @@ async def stop(ctx: commands.Context) -> None:
         return
 
     state = bot.get_state(ctx.guild.id)
+    cleanup_temp_track(state.current)
+    for t in state.queue:
+        cleanup_temp_track(t)
     state.queue.clear()
     state.current = None
     await ctx.guild.voice_client.disconnect()
@@ -1587,7 +1771,7 @@ async def info_cmd(ctx: commands.Context) -> None:
     embed.add_field(
         name="🎶 Reproducción y Control",
         value=(
-            "• `/play <nombre o link>`: Reproduce una canción de YouTube, SoundCloud o búsqueda libre.\n"
+            "• `/play <nombre o link>`: Reproduce una canción de YouTube, SoundCloud, Suno AI o búsqueda libre.\n"
             "• `/pause`: Pausa la reproducción actual.\n"
             "• `/resume`: Reanuda la canción pausada.\n"
             "• `/skip`: Pasa a la siguiente canción en la cola.\n"
