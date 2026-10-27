@@ -52,6 +52,8 @@ Bot de música para Discord de alta disponibilidad desarrollado en Python (`disc
   - **Blindaje de Horas Gratis**: Mientras la Raspberry Pi está activa, Cloudflare Worker **bloquea cualquier petición HTTP hacia Render**, garantizando que Render permanezca dormido consumiendo **0 horas** del plan gratuito.
 - **Reproducción Sin Silencios (Preloading en Background)**:
   - Cuando una canción empieza a sonar, el bot resuelve la siguiente pista de la cola en segundo plano (`trigger_preload`) para que la transición entre canciones sea instantánea.
+- **Soporte Nativo de Suno AI**:
+  - Descifrado dinámico en memoria de streams de Suno AI (`suno.com/song/<uuid>`, `cdn1.suno.ai/<uuid>.mp3`, etc.) mediante derivación GLT y AES-128-CTR a través de la API Mango sin necesidad de cookies ni cuentas de pago.
 - **Cola de Comandos Robusta con Cloudflare D1**:
   - Migrado de Cloudflare KV a **Cloudflare D1 (SQLite distribuido)**, eliminando las restricciones de cuota de escritura y soportando colas atómicas de órdenes de Discord y la web.
 - **Panel Web Interactivo ([musika.luisjourney.xyz](https://musika.luisjourney.xyz))**:
@@ -65,7 +67,7 @@ Bot de música para Discord de alta disponibilidad desarrollado en Python (`disc
 
 | Comando | Descripción |
 | :--- | :--- |
-| `/play <busqueda>` | Busca por nombre o enlace (YouTube / SoundCloud) y lo reproduce o añade a la cola. |
+| `/play <busqueda>` | Busca por nombre o enlace (YouTube, SoundCloud, Suno AI) y lo reproduce o añade a la cola. |
 | `/playlist <nombre> [aleatorio]` | Reproduce cualquiera de las listas guardadas en la web (con autocompletado y modo aleatorio). |
 | `/ytplaylist <url> [aleatorio] [guardar]` | Carga una lista de reproducción pública u oculta de YouTube en 1 segundo y opcionalmente la guarda en la web. |
 | `/pause` / `/resume` | Pausa o reanuda la pista actual. |
