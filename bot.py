@@ -51,6 +51,11 @@ YTDL_OPTIONS = {
     "no_warnings": True,
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android", "ios", "web"]
+        }
+    },
 }
 
 YTDL_PLAYLIST_OPTIONS = {
@@ -58,6 +63,11 @@ YTDL_PLAYLIST_OPTIONS = {
     "quiet": True,
     "no_warnings": True,
     "source_address": "0.0.0.0",
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android", "ios", "web"]
+        }
+    },
 }
 
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
@@ -245,25 +255,30 @@ def extract_track(
     except Exception:
         info = None
 
-    # Si YouTube bloquea la IP de Render o devuelve un preview corto, buscamos el audio completo (>45s)
+    # Si YouTube falla o no tiene URL de audio directa, probamos SoundCloud de forma segura
     if not info or not info.get("url"):
-        sc_term = clean_song_title(effective_title)
-        res = ytdl.extract_info(f"scsearch8:{sc_term}", download=False)
-        entries = [e for e in (res.get("entries") or []) if e and e.get("url")]
-        # Filtrar previews de 30 segundos de SoundCloud Go+ (elegir pista completa > 45s)
-        full_entries = [
-            e for e in entries if (e.get("duration") or 0) > 45
-        ]
-        chosen = (
-            full_entries[0]
-            if full_entries
-            else (entries[0] if entries else None)
-        )
-        if not chosen:
-            raise ValueError(
-                f"No se encontraron resultados reproducibles para: {effective_title}"
+        try:
+            sc_term = clean_song_title(effective_title)
+            res = ytdl.extract_info(f"scsearch8:{sc_term}", download=False)
+            entries = [e for e in (res.get("entries") or []) if e and e.get("url")]
+            # Priorizar pistas de duración razonable (evitar previews cortados de 30s si hay versión completa)
+            full_entries = [
+                e for e in entries if (e.get("duration") or 0) >= 30
+            ]
+            chosen = (
+                full_entries[0]
+                if full_entries
+                else (entries[0] if entries else None)
             )
-        info = chosen
+            if chosen:
+                info = chosen
+        except Exception as sc_err:
+            print(f"Fallback SoundCloud omitido: {sc_err}")
+
+    if not info or not info.get("url"):
+        raise ValueError(
+            f"No se encontraron resultados reproducibles para: {effective_title}"
+        )
 
     return Track(
         title=yt_title or fallback_title or info.get("title", "Canción"),
