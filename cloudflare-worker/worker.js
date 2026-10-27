@@ -378,7 +378,7 @@ const HTML_PAGE = `<!DOCTYPE html>
         </div>
 
         <form id="addSongForm" class="input-row" style="display:none;">
-          <input type="text" id="songQueryInput" placeholder="Escribe el nombre de una canción o pega un link de YouTube..." required />
+          <input type="text" id="songQueryInput" placeholder="Escribe el nombre de una canción o pega un link de YouTube/SoundCloud/Suno AI..." required />
           <button type="submit" id="addSongBtn">➕ Añadir Canción</button>
         </form>
 
@@ -401,7 +401,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       </div>
 
       <form id="addQueueForm" class="input-row">
-        <input type="text" id="queueQueryInput" placeholder="Buscar canción o pegar link de YouTube / SoundCloud para la cola..." required />
+        <input type="text" id="queueQueryInput" placeholder="Buscar canción o pegar link de YouTube / SoundCloud / Suno AI para la cola..." required />
         <button type="submit" class="btn-green" onclick="setQueueAddPos('end')">➕ Añadir a la Cola</button>
         <button type="submit" class="btn-secondary" onclick="setQueueAddPos('next')">⚡ Reproducir Siguiente</button>
       </form>
@@ -1002,6 +1002,31 @@ async function searchYouTubeEdge(query) {
 }
 
 async function resolveTrackMetadata(query) {
+  const isSuno = query.includes("suno.com") || query.includes("suno.ai");
+  const sunoMatch = query.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+  if (isSuno && sunoMatch) {
+    const uuid = sunoMatch[1].toLowerCase();
+    let title = `Pista Suno AI (${uuid.slice(0, 8)})`;
+    try {
+      const res = await fetch(`https://studio-api-prod.suno.com/api/oembed?url=https%3A%2F%2Fsuno.com%2Fsong%2F${uuid}`, {
+        headers: { "User-Agent": "Mozilla/5.0" }
+      });
+      if (res.ok) {
+        const info = await res.json();
+        if (info && info.title) {
+          title = `✨ ${info.title} (Suno AI)`;
+        }
+      }
+    } catch (_) {}
+    return {
+      title,
+      webpage_url: `https://suno.com/song/${uuid}`,
+      duration: null,
+      duration_str: "Suno AI",
+      thumbnail: `https://cdn2.suno.ai/image_large_${uuid}.jpeg`,
+    };
+  }
+
   if (query.startsWith("http://") || query.startsWith("https://")) {
     try {
       const res = await fetch(`https://noembed.com/embed?url=${encodeURIComponent(query)}`);
@@ -1268,7 +1293,7 @@ export default {
                     {
                       name: "🎶 Reproducción",
                       value:
-                        "`/play <nombre o link>` · `/pause` · `/resume` · `/skip` · `/stop` · `/queue`",
+                        "`/play <nombre o link>` · `/pause` · `/resume` · `/skip` · `/stop` · `/queue`\n*Soporta YouTube, SoundCloud y canciones de Suno AI.*",
                     },
                     {
                       name: "💿 Playlists",
@@ -1305,7 +1330,12 @@ export default {
 
         let replyText = `🎶 Comando \`/${cmdName}\` enviado al bot.${wakeNotice}`;
         if (cmdName === "play") {
-          replyText = `▶️ Buscando y cargando: **${opts.busqueda}**...${wakeNotice}`;
+          const isSuno = opts.busqueda && (opts.busqueda.includes("suno.com") || opts.busqueda.includes("suno.ai"));
+          if (isSuno) {
+            replyText = `✨ Descifrando y cargando pista de Suno AI: **${opts.busqueda}**...${wakeNotice}`;
+          } else {
+            replyText = `▶️ Buscando y cargando: **${opts.busqueda}**...${wakeNotice}`;
+          }
         } else if (cmdName === "playlist") {
           replyText = `💿 Cargando playlist **${opts.nombre}**...${wakeNotice}`;
         } else if (cmdName === "ytplaylist") {
