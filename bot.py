@@ -31,6 +31,8 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
 PUBLIC_WEB_URL = os.getenv("PUBLIC_WEB_URL", "https://musika.luisjourney.xyz")
+# Tiempo de inactividad antes de desconectar del canal de voz (30 minutos por defecto)
+VOICE_INACTIVITY_TIMEOUT = int(os.getenv("VOICE_INACTIVITY_TIMEOUT", "1800"))
 
 BASE_DIR = Path(__file__).parent
 PLAYLISTS_FILE = BASE_DIR / "playlists.json"
@@ -148,6 +150,7 @@ class GuildMusicState:
         self.queue: deque[Track] = deque()
         self.current: Optional[Track] = None
         self.text_channel: Optional[discord.abc.Messageable] = None
+        self.idle_since: Optional[float] = None
 
 
 def clean_song_title(raw_title: str) -> str:
@@ -532,6 +535,7 @@ class MusicBot(commands.Bot):
     async def setup_hook(self) -> None:
         await self.start_web_server()
         self.loop.create_task(cloud_sync_loop())
+        self.loop.create_task(inactivity_check_loop())
         await self.tree.sync()
         print("Comandos Slash (/) sincronizados globalmente.")
 
@@ -614,6 +618,7 @@ async def play_next_async(guild: discord.Guild) -> None:
 
     if not state.queue:
         state.current = None
+        state.idle_since = time.time()
         return
 
     next_track = state.queue.popleft()
@@ -644,6 +649,7 @@ async def play_next_async(guild: discord.Guild) -> None:
             return
 
     state.current = next_track
+    state.idle_since = None
     played_track = next_track
 
     is_remote = next_track.stream_url.startswith(("http://", "https://"))
@@ -1146,6 +1152,64 @@ async def cloud_sync_loop() -> None:
                 LAST_SYNC_STATUS["status"] = "error"
                 LAST_SYNC_STATUS["error"] = str(exc)
             await asyncio.sleep(2)
+
+
+async def inactivity_check_loop() -> None:
+    """Desconecta automáticamente el bot del canal de voz tras 30 minutos sin reproducir música o si está solo."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            now = time.time()
+            for guild in bot.guilds:
+                vc = guild.voice_client
+                st = bot.get_state(guild.id)
+
+                if not vc or not vc.is_connected():
+                    st.idle_since = None
+                    continue
+
+                humans = (
+                    [m for m in vc.channel.members if not m.bot]
+                    if vc.channel
+                    else []
+                )
+                # Activo solo si está sonando música Y hay al menos 1 persona escuchando
+                is_active = vc.is_playing() and len(humans) > 0
+
+                if is_active:
+                    st.idle_since = None
+                else:
+                    if st.idle_since is None:
+                        st.idle_since = now
+                    elif (now - st.idle_since) >= VOICE_INACTIVITY_TIMEOUT:
+                        channel_name = vc.channel.name if vc.channel else "canal de voz"
+                        mins = VOICE_INACTIVITY_TIMEOUT // 60
+                        print(
+                            f"[{guild.name}] Desconectando de '{channel_name}' tras {mins} min de inactividad."
+                        )
+                        ch = st.text_channel
+                        cleanup_temp_track(st.current)
+                        for t in st.queue:
+                            cleanup_temp_track(t)
+                        st.queue.clear()
+                        st.current = None
+                        st.idle_since = None
+
+                        try:
+                            await vc.disconnect()
+                        except Exception as exc:
+                            print(f"Error al desconectar voice_client en {guild.name}: {exc}")
+
+                        if ch:
+                            try:
+                                await ch.send(
+                                    f"💤 Me he desconectado de **{channel_name}** tras {mins} minutos sin música para ahorrar recursos."
+                                )
+                            except Exception:
+                                pass
+        except Exception as exc:
+            print(f"Error en inactivity_check_loop: {exc}")
+        await asyncio.sleep(15)
 
 
 # ==================== ENDPOINTS WEB API ====================
