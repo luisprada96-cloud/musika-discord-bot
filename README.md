@@ -54,6 +54,8 @@ Bot de música para Discord de alta disponibilidad desarrollado en Python (`disc
   - Cuando una canción empieza a sonar, el bot resuelve la siguiente pista de la cola en segundo plano (`trigger_preload`) para que la transición entre canciones sea instantánea.
 - **Soporte Nativo de Suno AI**:
   - Descifrado dinámico en memoria de streams de Suno AI (`suno.com/song/<uuid>`, `cdn1.suno.ai/<uuid>.mp3`, etc.) mediante derivación GLT y AES-128-CTR a través de la API Mango sin necesidad de cookies ni cuentas de pago.
+- **Desconexión Automática por Inactividad (30 min)**:
+  - Si el bot lleva 30 minutos sin reproducir música (cola vacía o pausa prolongada) o si todos los usuarios abandonan el canal de voz, se desconecta automáticamente para liberar recursos de audio y ahorrar datos.
 - **Cola de Comandos Robusta con Cloudflare D1**:
   - Migrado de Cloudflare KV a **Cloudflare D1 (SQLite distribuido)**, eliminando las restricciones de cuota de escritura y soportando colas atómicas de órdenes de Discord y la web.
 - **Panel Web Interactivo ([musika.luisjourney.xyz](https://musika.luisjourney.xyz))**:
