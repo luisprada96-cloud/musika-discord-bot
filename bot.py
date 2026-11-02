@@ -699,6 +699,39 @@ async def play_next_async(guild: discord.Guild) -> None:
             pass
 
 
+async def ensure_voice_connect(
+    channel: discord.VoiceChannel, timeout: float = 15.0
+) -> Optional[discord.VoiceClient]:
+    """Conecta de forma segura a un canal de voz, limpiando conexiones zombie o desconectadas."""
+    guild = channel.guild
+    vc = guild.voice_client
+    if vc:
+        if vc.is_connected():
+            if vc.channel != channel:
+                await vc.move_to(channel)
+            return vc
+        else:
+            try:
+                await vc.disconnect(force=True)
+            except Exception:
+                pass
+
+    try:
+        return await channel.connect(reconnect=True, timeout=timeout)
+    except Exception as exc:
+        print(f"Error conectando a {channel.name}: {exc}")
+        if guild.voice_client:
+            try:
+                await guild.voice_client.disconnect(force=True)
+            except Exception:
+                pass
+            try:
+                return await channel.connect(reconnect=True, timeout=timeout)
+            except Exception:
+                pass
+    return None
+
+
 async def find_or_connect_voice(
     preferred_guild: Optional[discord.Guild] = None,
     user_id: Optional[int] = None,
@@ -710,8 +743,14 @@ async def find_or_connect_voice(
     for guild in guilds:
         if not guild:
             continue
-        if guild.voice_client and guild.voice_client.is_connected():
-            return guild, guild.voice_client, None
+        if guild.voice_client:
+            if guild.voice_client.is_connected():
+                return guild, guild.voice_client, None
+            else:
+                try:
+                    await guild.voice_client.disconnect(force=True)
+                except Exception:
+                    pass
 
     # 2. Si sabemos qué usuario ejecutó la orden, buscar en qué canal de voz está
     if user_id:
@@ -719,44 +758,31 @@ async def find_or_connect_voice(
             if not guild:
                 continue
             vs = guild._voice_states.get(user_id)
-            if vs and vs.channel:
-                try:
-                    vc = await vs.channel.connect()
+            if vs and vs.channel and isinstance(vs.channel, discord.VoiceChannel):
+                vc = await ensure_voice_connect(vs.channel)
+                if vc:
                     return guild, vc, None
-                except discord.ClientException:
-                    if guild.voice_client:
-                        return guild, guild.voice_client, None
-                except Exception as exc:
-                    print(f"Error conectando al canal del usuario ({user_id}): {exc}")
 
     # 3. Fallback: buscar mediante guild._voice_states si hay algún humano en canales de voz
     for guild in guilds:
         if not guild:
             continue
         for uid, vs in guild._voice_states.items():
-            if vs.channel and (not bot.user or uid != bot.user.id):
-                try:
-                    vc = await vs.channel.connect()
+            if vs.channel and isinstance(vs.channel, discord.VoiceChannel) and (not bot.user or uid != bot.user.id):
+                vc = await ensure_voice_connect(vs.channel)
+                if vc:
                     return guild, vc, None
-                except discord.ClientException:
-                    if guild.voice_client:
-                        return guild, guild.voice_client, None
-                except Exception:
-                    pass
 
     # 4. Fallback clásico por vc.members
     for guild in guilds:
         if not guild:
             continue
-        for vc in guild.voice_channels:
-            humans = [m for m in vc.members if not m.bot]
+        for ch in guild.voice_channels:
+            humans = [m for m in ch.members if not m.bot]
             if humans:
-                try:
-                    voice_client = await vc.connect()
-                    return guild, voice_client, None
-                except discord.ClientException:
-                    if guild.voice_client:
-                        return guild, guild.voice_client, None
+                vc = await ensure_voice_connect(ch)
+                if vc:
+                    return guild, vc, None
 
     return (
         None,
@@ -834,7 +860,7 @@ async def execute_remote_command(cmd: dict) -> None:
                         cleanup_temp_track(t)
                     state.queue.clear()
                     state.current = None
-                    await vc.disconnect()
+                    await vc.disconnect(force=True)
 
     elif ctype == "queue_add":
         query = cmd.get("query")
@@ -946,7 +972,7 @@ async def execute_remote_command(cmd: dict) -> None:
                         cleanup_temp_track(t)
                     st.queue.clear()
                     st.current = None
-                    await vc.disconnect()
+                    await vc.disconnect(force=True)
             return
 
         guild, voice_client, err = await find_or_connect_voice(
@@ -1164,8 +1190,26 @@ async def inactivity_check_loop() -> None:
                 vc = guild.voice_client
                 st = bot.get_state(guild.id)
 
-                if not vc or not vc.is_connected():
+                if not vc:
                     st.idle_since = None
+                    continue
+
+                # Si el voice_client existe pero perdió la conexión con Discord (>20s), forzar limpieza
+                if not vc.is_connected():
+                    if st.idle_since is None:
+                        st.idle_since = now
+                    elif (now - st.idle_since) >= 20:
+                        print(f"[{guild.name}] Limpiando voice_client zombie no conectado tras caída de voz.")
+                        cleanup_temp_track(st.current)
+                        for t in st.queue:
+                            cleanup_temp_track(t)
+                        st.queue.clear()
+                        st.current = None
+                        st.idle_since = None
+                        try:
+                            await vc.disconnect(force=True)
+                        except Exception:
+                            pass
                     continue
 
                 humans = (
@@ -1196,7 +1240,7 @@ async def inactivity_check_loop() -> None:
                         st.idle_since = None
 
                         try:
-                            await vc.disconnect()
+                            await vc.disconnect(force=True)
                         except Exception as exc:
                             print(f"Error al desconectar voice_client en {guild.name}: {exc}")
 
@@ -1209,7 +1253,32 @@ async def inactivity_check_loop() -> None:
                                 pass
         except Exception as exc:
             print(f"Error en inactivity_check_loop: {exc}")
-        await asyncio.sleep(15)
+        await asyncio.sleep(10)
+
+
+@bot.event
+async def on_voice_state_update(
+    member: discord.Member,
+    before: discord.VoiceState,
+    after: discord.VoiceState,
+) -> None:
+    """Si el bot es desconectado del canal de voz (por Discord o moderador), resetea el estado limpiamente."""
+    if bot.user and member.id == bot.user.id:
+        if before.channel is not None and after.channel is None:
+            st = bot.get_state(member.guild.id)
+            cleanup_temp_track(st.current)
+            for t in st.queue:
+                cleanup_temp_track(t)
+            st.queue.clear()
+            st.current = None
+            st.idle_since = None
+            vc = member.guild.voice_client
+            if vc:
+                try:
+                    await vc.disconnect(force=True)
+                except Exception:
+                    pass
+            print(f"[{member.guild.name}] Bot desconectado del canal de voz. Estado reseteado con éxito.")
 
 
 # ==================== ENDPOINTS WEB API ====================
@@ -1455,7 +1524,7 @@ async def handle_player_action(request: web.Request) -> web.Response:
                     cleanup_temp_track(t)
                 state.queue.clear()
                 state.current = None
-                await vc.disconnect()
+                await vc.disconnect(force=True)
                 return web.json_response(
                     {"ok": True, "message": "⏹️ Reproducción detenida"}
                 )
@@ -1488,12 +1557,10 @@ async def play(ctx: commands.Context, *, busqueda: str) -> None:
     await ctx.defer()
 
     target_channel = ctx.author.voice.channel
-    voice_client = ctx.guild.voice_client
-
-    if not voice_client:
-        voice_client = await target_channel.connect()
-    elif voice_client.channel != target_channel:
-        await voice_client.move_to(target_channel)
+    voice_client = await ensure_voice_connect(target_channel)
+    if not voice_client or not voice_client.is_connected():
+        await ctx.send("❌ No se pudo conectar al canal de voz. Inténtalo de nuevo.")
+        return
 
     try:
         track = await asyncio.to_thread(
@@ -1581,11 +1648,10 @@ async def playlist_cmd(
         random.shuffle(tracks_data)
 
     target_channel = ctx.author.voice.channel
-    voice_client = ctx.guild.voice_client
-    if not voice_client:
-        voice_client = await target_channel.connect()
-    elif voice_client.channel != target_channel:
-        await voice_client.move_to(target_channel)
+    voice_client = await ensure_voice_connect(target_channel)
+    if not voice_client or not voice_client.is_connected():
+        await ctx.send("❌ No se pudo conectar al canal de voz. Inténtalo de nuevo.")
+        return
 
     state = bot.get_state(ctx.guild.id)
     state.text_channel = ctx.channel
@@ -1669,11 +1735,10 @@ async def ytplaylist_cmd(
         random.shuffle(tracks)
 
     target_channel = ctx.author.voice.channel
-    voice_client = ctx.guild.voice_client
-    if not voice_client:
-        voice_client = await target_channel.connect()
-    elif voice_client.channel != target_channel:
-        await voice_client.move_to(target_channel)
+    voice_client = await ensure_voice_connect(target_channel)
+    if not voice_client or not voice_client.is_connected():
+        await ctx.send("❌ No se pudo conectar al canal de voz. Inténtalo de nuevo.")
+        return
 
     state = bot.get_state(ctx.guild.id)
     state.text_channel = ctx.channel
@@ -1813,7 +1878,7 @@ async def stop(ctx: commands.Context) -> None:
         cleanup_temp_track(t)
     state.queue.clear()
     state.current = None
-    await ctx.guild.voice_client.disconnect()
+    await ctx.guild.voice_client.disconnect(force=True)
     await ctx.send("⏹️ Cola vaciada y desconectado del canal de voz.")
 
 
